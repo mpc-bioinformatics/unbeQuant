@@ -4,13 +4,18 @@ The LFQ is currently not implemented in Nextflow
 
 Current Roadmap: 
 
-0. ThermoRawFileParser (generate profile mzML of MS1)
+0. ~~ThermoRawFileParser (generate profile mzML of MS1)~~
 1. OpenMS Feature Detection (FeatureFinderIsotopeWaveloet)
 2. Alignstein (https://github.com/grzsko/Alignstein)
 3. XIC Extraction (for AUR, ThermoRawFileParser via JSON)
 4. Mapping Identifications with Features (custom Python script)
 5. Generate readable and usable XLSX and/or tsv (which can be later used for statistical analysis)
 
+For 2.
+
+```text
+/home/luxdo/Desktop/spass/openms/usr/bin/FeatureFinderIsotopeWavelet -in Example_Folder/mzmls/QEXHF19830std.mzML -out QEXHF19830std.mzML.featureXML -algorithm:hr_data
+```
 
 # Readme
 
