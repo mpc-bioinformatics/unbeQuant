@@ -40,7 +40,7 @@ IDENTIFICATION_NUM_PARALLEL_SEARCHES="8"
 nextflow run -with-report "${FOLDER}_convert_raw_to_mzml_report.html" -with-timeline "${FOLDER}_convert_raw_to_mzml_timeline.html" \
     convert_raw_to_mzml.nf \
     --thermo_raws "${FOLDER}" \
-    --additional_params " --noPeakPicking=1 " \
+    # --additional_params " --noPeakPicking=1 " \
     --outdir "${FOLDER}/mzmls"
 
 
