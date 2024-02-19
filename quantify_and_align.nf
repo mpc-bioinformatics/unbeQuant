@@ -135,6 +135,8 @@ process extract_xics_and_save_to_tsv {
 
 
 process map_alignment_and_consensus_generation {
+    publishDir "${params.qal_outdir}/features_with_annotated_identifications", mode:'copy'
+
     input:
     tuple val(fdr), file(features)
 
