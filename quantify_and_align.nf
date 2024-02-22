@@ -24,7 +24,7 @@ workflow {
     identifications = Channel.fromPath(params.qal_idents + "/" + params.qal_idents_blob_filter)
     identifications_tuple = identifications
         .map { file -> tuple(
-            file.baseName.substring(file.baseName.indexOf("fdr_") + 4, file.baseName.indexOf("fdr_") + 8), 
+            file.baseName.substring(file.baseName.indexOf("fdr_"), file.baseName.indexOf("fdr_") + 4), 
             file
         ) }.groupTuple()
 
@@ -73,9 +73,10 @@ workflow quantify_and_align {
         map_alignment_and_consensus_generation(identified_features_by_fdr)
 
 
-        //// Generate the final statistics (information?) table
+        //// Generate the final statistics and visualizations
         fdr_and_feature_tsvs = extract_xics_and_save_to_tsv.out.map { it -> tuple(it[1], it[2]) }.groupTuple()
-        consensus_with_feature_tsvs = map_alignment_and_consensus_generation.out.join(fdr_and_feature_tsvs, by: 0)
+        consensus_with_feature_tsvs = map_alignment_and_consensus_generation.out[0].join(fdr_and_feature_tsvs, by: 0)
+        visualize_RT_transoformations(map_alignment_and_consensus_generation.out[1])
         generate_feature_ident_intesity_table(consensus_with_feature_tsvs)
 
     emit:
@@ -109,11 +110,11 @@ process match_feature_with_idents {
     tuple val(file_identifier), val(fdr), file(ident_tsv), file(featurexml)
 
     output:
-    tuple val(file_identifier), val(fdr), file("${featurexml.baseName}_____fdr_${fdr}_____with_identifications.featureXML")
+    tuple val(file_identifier), val(fdr), file("${featurexml.baseName}_____${fdr}_____with_identifications.featureXML")
 
     """
     convert_ident_to_idXML.py -use_protgraph ${params.qal_protgraph_was_used} -tsv_file ${ident_tsv} -o ${ident_tsv.baseName}.idXML
-    \$(get_cur_bin_dir.sh)/openms/usr/bin/IDMapper -id ${ident_tsv.baseName}.idXML -in ${featurexml} -out ${featurexml.baseName}_____fdr_${fdr}_____with_identifications.featureXML
+    \$(get_cur_bin_dir.sh)/openms/usr/bin/IDMapper -id ${ident_tsv.baseName}.idXML -in ${featurexml} -out ${featurexml.baseName}_____${fdr}_____with_identifications.featureXML
     """
 }
 
@@ -141,26 +142,52 @@ process map_alignment_and_consensus_generation {
     tuple val(fdr), file(features)
 
     output:
-    tuple val(fdr), file("consensus_____fdr_${fdr}.consensusXML")
+    tuple val(fdr), file("consensus_____${fdr}.consensusXML")
+    tuple val(fdr), file("*.trafoXML")
 
     """
     NEW_FEATURES=()
+    NEW_FEATURES_TRAFO=()
     for file in ${features}
     do
         NEW_FEATURES+=("\$(basename -- "\$file")_____aligned.featureXML")
+        NEW_FEATURES_TRAFO+=("\$(basename -- "\$file")_____aligned.trafoXML")
     done
 
     # MapAlignerTreeGuided
-    \$(get_cur_bin_dir.sh)/openms/usr/bin/MapAlignerTreeGuided -in ${features} -out \${NEW_FEATURES[@]}
+    \$(get_cur_bin_dir.sh)/openms/usr/bin/MapAlignerTreeGuided -in ${features} -out \${NEW_FEATURES[@]} -trafo_out \${NEW_FEATURES_TRAFO[@]}
 
     # Consensus Generation
-    \$(get_cur_bin_dir.sh)/openms/usr/bin/FeatureLinkerUnlabeled -in \${NEW_FEATURES[@]} -out consensus_____fdr_${fdr}.consensusXML
+    \$(get_cur_bin_dir.sh)/openms/usr/bin/FeatureLinkerUnlabeled -in \${NEW_FEATURES[@]} -out consensus_____${fdr}.consensusXML
+    """
+}
+
+process visualize_RT_transoformations {
+    publishDir "${params.qal_outdir}/visualizations___${fdr}", mode:'copy'
+
+    input:
+    tuple val(fdr), file(trafo_xmls)
+
+    output:
+    file("*.png")
+    file("*.html")
+
+    """
+    CONCAT_TRAFOS=""
+    for file in $trafo_xmls
+    do
+        CONCAT_TRAFOS+="\$file,"
+    done
+    CONCAT_TRAFOS=\$(echo \$CONCAT_TRAFOS | rev | cut -c2- | rev)
+
+    PYTHONUNBUFFERED=1 visualize_RT_alignment.py -trafo_xmls \$CONCAT_TRAFOS 
     """
 }
 
 
+
 process generate_feature_ident_intesity_table {
-    publishDir "${params.qal_outdir}/statistics___${fdr}_fdr", mode:'copy'
+    publishDir "${params.qal_outdir}/statistics___${fdr}", mode:'copy'
 
     input:
     tuple val(fdr), file(consensus), file(tsvs)

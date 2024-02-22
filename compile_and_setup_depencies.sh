@@ -67,6 +67,8 @@ pip install nextflow
 pip install lxml
 # For various things in python scripts
 pip install pyopenms==3.1.0
+# Exporting figures
+pip install kaleido
 
 
 ##### Make all files in bin executable (excluding sub-directories) to be visible by processes in Nextflow
