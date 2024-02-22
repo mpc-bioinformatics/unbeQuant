@@ -52,7 +52,7 @@ workflow identification_via_comet {
         single_fdrs_channel = Channel.from(single_fdrs)
 
         // Remove the mzid, since we either work with the pin or txt-file in this workflow
-        txt_and_pin = comet_search_mgf.out.map { mzid, txt, pin -> tuple(txt, pin) }
+        txt_and_pin = comet_search_mgf.out.map { mzid, txt, pin, mgf -> tuple(txt, pin, mgf) }
         
         if (params.idc_use_percolator == 1) {
             // Case: Use Percolator to rescore the identification results
@@ -60,13 +60,13 @@ workflow identification_via_comet {
             execute_percolator(search_results_with_fdr)
             combined_txt_channel = execute_percolator.out
                 .combine(fasta_file)
-                .map { tuple(it[0], it[1], it[3], it[2]) }
+                .map { tuple(it[0], it[1], it[2], it[4], it[3]) }
         } else {
             // Case: Do not use Percolator and just continue with the  identification results
             combined_txt_channel = txt_and_pin
                 .combine(fasta_file)
                 .combine(single_fdrs)
-                .map { tuple(it[0], "/NO_PERC", it[2], it[3]) }
+                .map { tuple(it[0], "/NO_PERC", it[2], it[3], it[4]) }
         }
 
         // Cutoff idntnification table
@@ -88,7 +88,7 @@ process comet_search_mgf {
     tuple path(input_fasta), path(mod_file), path(mgf_file)
 
     output: 
-    tuple path("${mgf_file.baseName}.mzid"), path("${mgf_file.baseName}.txt"), path("${mgf_file.baseName}.pin")
+    tuple path("${mgf_file.baseName}.mzid"), path("${mgf_file.baseName}.txt"), path("${mgf_file.baseName}.pin"), file(mgf_file)
 
     """
     # Replace specific settings regulated by this workflow (or to ensure output files)
@@ -108,10 +108,10 @@ process execute_percolator {
     publishDir "${params.idc_outdir}", mode:'copy', enabled:"${params.idc_export_data}"
 
     input:
-    tuple path(txt), path(comet_pin), val(fdr)
+    tuple path(txt), path(comet_pin), file(mgf), val(fdr)
 
     output: 
-    tuple path(txt), path("${comet_pin.baseName}_____perc_fdr_${fdr}.tsv"), val(fdr)
+    tuple path(txt), path("${comet_pin.baseName}_____perc_fdr_${fdr}.tsv"), file(mgf), val(fdr)
 
     """
     # Escape Pin-File so that the generated XML by Percolator is valid
@@ -137,7 +137,7 @@ process cutoff_identification_results {
     publishDir "${params.idc_outdir}", mode:'copy', enabled:"${params.idc_export_data}"
 
     input:
-    tuple path(comet_txt), path(perc_tsv), path(fasta), val(fdr)
+    tuple path(comet_txt), path(perc_tsv), file(mgf), path(fasta), val(fdr)
 
     output:
     tuple val(fdr), path("${comet_txt.baseName}*____qvalue_no_decoys_fdr_${fdr}.tsv")
@@ -149,6 +149,7 @@ process cutoff_identification_results {
         # No Percolator was used
          PYTHONUNBUFFERED=1 apply_fdr_comet.py \\
             -comet_txt ${comet_txt} \\
+            -mgf_file ${mgf} \\
             -use_n_hits ${params.idc_use_n_hits} \\
             -fasta ${fasta} \\
             -decoy_string "DECOY_" \\
@@ -160,6 +161,7 @@ process cutoff_identification_results {
         PYTHONUNBUFFERED=1 apply_fdr_comet.py \\
             -comet_txt ${comet_txt} \\
             -perc_tsv ${perc_tsv} \\
+            -mgf_file ${mgf} \\
             -use_n_hits ${params.idc_use_n_hits} \\
             -fasta ${fasta} \\
             -decoy_string "DECOY_" \\

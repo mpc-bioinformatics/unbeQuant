@@ -20,6 +20,7 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("-comet_txt", help="The txt-output from Comet (always needed)")
     parser.add_argument("-perc_tsv", help="The pin-output from Comet (optional, if not provided)")
+    parser.add_argument("-mgf_file", help="The Input MGF file which was used initially for. Should contain 'scan=' in the title")
     parser.add_argument("-use_n_hits", help="Use second/third/n-th hits for fdr caluclation (if set higher, the FDR will be skewed due to n!=1 hits which have a a higher score then the n=1 hits, possibly yielding less identied spectra)", default=1, type=int)
     parser.add_argument("-fasta", help="The FASTA-File which was used for identification in Comet")
     parser.add_argument("-decoy_string", help="The decoy string which was used during identification in Comet ", default="DECOY_")
@@ -28,6 +29,32 @@ def parse_args():
     parser.add_argument("-out_no_decoys_tsv", help="Output table with no decoys removed", default=None)
     parser.add_argument("-out_fdr_cutoff_tsv", help="Output of the cutoff-table with no decoys on the fdr", default=None)
     return parser.parse_args()
+
+
+def read_mgf(mgf_file) -> dict:
+    '''
+    Read the whole MGF and parse the RT and M/Z values into a dictionary for lookups later on
+    '''
+    rt_mz_dict = dict()
+    with open(mgf_file, "r") as mgf_file:
+        scan = None
+        rt = None
+        mz= None
+        for line in mgf_file:
+            if line.startswith("TITLE"):
+                # Extract scan number
+                scan = [int(x[len("scan="):]) for x in line[len("TITLE="):].split(" ") if x.startswith("scan=")][0]
+            elif line.startswith("RTINSECONDS="):
+                # Extract the Retention time
+                rt = float(line[len("RTINSECONDS="):])
+            elif line.startswith("PEPMASS="):
+                # Extract the Pepmass / MZ Value
+                mz = float(line[len("PEPMASS="):])
+            elif line.startswith("END IONS"):
+                # Write results
+                rt_mz_dict[scan] = (rt, mz)
+
+    return rt_mz_dict
 
 
 def apply_fdr(entries: list, protein_idx: int, consider_entry_based_on_num = lambda x: True, decoy_string = "DECOY_"):
@@ -149,11 +176,14 @@ if __name__ == "__main__":
     "fasta_desc" --> The FASTA-Description (>XX|XXXXX|Description)
     "used_score" --> The value of the used score (for Comet: xcorr, for Percolator: svm_score)
     "charge" --> The charge state of the PSM
-    "retention_time" --> The RT of the PSM
-    "exp_mass_to_charge" --> THe experimental mass to charge (percursor_mass + Hydrogen / charge)
+    "retention_time" --> The RT which was present in the MGF
+    "exp_mass_to_charge" --> THe experimental mass to charge which was present in the MGF
     '''
     # Parse arguments
     args = parse_args()
+
+    # Get the MGF RT/MZ dict:
+    mz_rt_to_scan_dict = read_mgf(args.mgf_file)
 
     # Get the psms either from comet (or if provided from percolator)
     if args.perc_tsv is None:
@@ -195,16 +225,14 @@ if __name__ == "__main__":
             )
 
             # Fill the additional entries
-            retention_time_idx = headers.index("retention_time_sec")
-            charge_idx = headers.index("charge")
-            exp_neutral_mass_idx = headers.index("exp_neutral_mass")
+            scan_idx = headers.index("scan")
             for entry, qval_entry in zip(entries, qval_entries):
                 additional_entries.append(
                     [
                         ",".join([fasta_acc_desc[x] for x in qval_entry[fasta_acc_idx].split(",")]),  # fasta_desc: As in accession, seperated by ,
                         entry[score_idx],  # used_score: To show which was used to calculate to FDR
-                        entry[retention_time_idx],  # retention_time: Copied from retention_time_sec
-                        get_exp_mass_to_charge(float(entry[exp_neutral_mass_idx]), int(entry[charge_idx])) # exp_mass_to_charge: Calcuated based on mass and charge
+                        mz_rt_to_scan_dict(int(scan))[0],  # retention_time: Copied from the MGF
+                        mz_rt_to_scan_dict(int(scan))[1]  # exp_mass_to_charge: Copied from the MGF
                     ]
                 )
 
@@ -257,11 +285,8 @@ if __name__ == "__main__":
                         charge,  # charge
                         ",".join([fasta_acc_desc[x] for x in qval_entry[fasta_acc_idx].split(",")]),  # fasta_desc: As in accession, seperated by ,
                         entry[score_idx],  # used_score: To show which was used to calculate to FDR
-                        get_from_comet_txt(comet_results_df, [scan, charge, num], "retention_time_sec"),  # retention_time: Retrieved from the comet-results
-                        get_exp_mass_to_charge(
-                            float(get_from_comet_txt(comet_results_df, [scan, charge, num], "exp_neutral_mass")), 
-                            int(charge)
-                        )  # exp_mass_to_charge: Calcuated based on mass and charge (mass, retrieved from Comet results)
+                        mz_rt_to_scan_dict(int(scan))[0], # retention_time: Get the Retention time from the MGF
+                        mz_rt_to_scan_dict(int(scan))[1],  # exp_mass_to_charge: Get  the M/Z-Value from the MGF
                     ]
                 )
 
