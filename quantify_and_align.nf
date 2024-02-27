@@ -114,7 +114,7 @@ process match_feature_with_idents {
 
     """
     convert_ident_to_idXML.py -use_protgraph ${params.qal_protgraph_was_used} -tsv_file ${ident_tsv} -o ${ident_tsv.baseName}.idXML
-    \$(get_cur_bin_dir.sh)/openms/usr/bin/IDMapper -id ${ident_tsv.baseName}.idXML -in ${featurexml} -out ${featurexml.baseName}_____${fdr}_____with_identifications.featureXML
+    \$(get_cur_bin_dir.sh)/openms/usr/bin/IDMapper -id ${ident_tsv.baseName}.idXML -mz_reference precursor -in ${featurexml} -out ${featurexml.baseName}_____${fdr}_____with_identifications.featureXML
     """
 }
 
