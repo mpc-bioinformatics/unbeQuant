@@ -49,7 +49,7 @@ def read_mgf(mgf_file) -> dict:
                 rt = float(line[len("RTINSECONDS="):])
             elif line.startswith("PEPMASS="):
                 # Extract the Pepmass / MZ Value
-                mz = float(line[len("PEPMASS="):])
+                mz = float(line[len("PEPMASS="):].split(" ")[0])
             elif line.startswith("END IONS"):
                 # Write results
                 rt_mz_dict[scan] = (rt, mz)
@@ -231,8 +231,8 @@ if __name__ == "__main__":
                     [
                         ",".join([fasta_acc_desc[x] for x in qval_entry[fasta_acc_idx].split(",")]),  # fasta_desc: As in accession, seperated by ,
                         entry[score_idx],  # used_score: To show which was used to calculate to FDR
-                        mz_rt_to_scan_dict[int(scan)][0],  # retention_time: Copied from the MGF
-                        mz_rt_to_scan_dict[int(scan)][1]  # exp_mass_to_charge: Copied from the MGF
+                        mz_rt_to_scan_dict[int(entry[scan_idx])][0], # retention_time: Copied from the MGF
+                        mz_rt_to_scan_dict[int(entry[scan_idx])][1]  # exp_mass_to_charge: Copied from the MGF
                     ]
                 )
 

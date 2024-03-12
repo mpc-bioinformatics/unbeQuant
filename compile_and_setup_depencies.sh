@@ -15,7 +15,7 @@ wget -O bin/comet.linux.exe https://github.com/UWPR/Comet/releases/download/v202
 # Delete previously downloaded ThermoRawFileParser
 rm -rf bin/ThermoRawFileParser
 # Download ThermoRawFileParser
-wget -O trfp.zip https://github.com/compomics/ThermoRawFileParser/releases/download/v1.4.2/ThermoRawFileParser1.4.2.zip
+wget -O trfp.zip https://github.com/compomics/ThermoRawFileParser/releases/download/v1.4.3/ThermoRawFileParser1.4.3.zip
 # Extract archive
 unzip trfp.zip -d bin/ThermoRawFileParser
 # Delete downloaded archive

@@ -18,6 +18,8 @@ def parse_args():
     parser.add_argument("-featurexmls_tsvs", help="Input-featureXML-TSV-Files, comma-seperated and converted by 'features_to_tsv'")
     parser.add_argument("-consensus", help="Input")
     parser.add_argument("-out_tsv", help="Output-tsv-file, summarizing all the results across all input_files")
+    parser.add_argument("-out_tsv_reduced", help="Output-tsv-file, summarizing a smaller result set in the table")
+    parser.add_argument("-out_tsv_minimal", help="Output-tsv-file, summarizing a minimal result set in the table")
 
     return parser.parse_args()
 
@@ -70,12 +72,28 @@ if __name__ == "__main__":
         "l_intensities"
     ]
 
+    header_per_file_reduced = [
+        "sum_intensity",
+        "l_pep_ident",
+        "l_prot_ident",
+        "openms_fid",
+        "charge",
+    ]
+
+    header_per_minimal = [
+        "sum_intensity",
+        "openms_fid",
+        "charge"
+    ]
+
     # Set File-Order
     filenames = sorted(dict_of_single_features.keys())
 
     # Create final results_file
-    with open(args.out_tsv, "w") as out_file:
+    with open(args.out_tsv, "w") as out_file, open(args.out_tsv_reduced, "w") as out_file_reduced, open(args.out_tsv_minimal, "w") as out_file_minimal:
         out_csv = csv.writer(out_file, delimiter="\t")
+        out_csv_reduced = csv.writer(out_file_reduced, delimiter="\t")
+        out_csv_minimal = csv.writer(out_file_minimal, delimiter="\t")
 
         # For each feature, we get all infos from all files and headers in the above mentioned order
         # First get header
@@ -87,10 +105,28 @@ if __name__ == "__main__":
                 )
         out_csv.writerow(row_header)
 
+        row_header = ["openms_ceid"]
+        for h in header_per_file_reduced:
+            for f in filenames:
+                row_header.append(
+                    f + "_____" + h
+                )
+        out_csv_reduced.writerow(row_header)
+
+        row_header = ["openms_ceid"]
+        for h in header_per_minimal:
+            for f in filenames:
+                row_header.append(
+                    f + "_____" + h
+                )
+        out_csv_minimal.writerow(row_header)
+
         print("Writing consensus table")
         # Now get data
         for ce in tqdm.tqdm(cmap, total=len([None for _ in cmap]), unit="consensus_element(s)"):
             entry = ["e_" + str(ce.getUniqueId())]
+            entry_reduced = ["e_" + str(ce.getUniqueId())]
+            entry_minimal = ["e_" + str(ce.getUniqueId())]
             feature_list = ce.getFeatureList()
 
             files_involved = [map_list[fl.getMapIndex()] for fl in feature_list]
@@ -118,6 +154,32 @@ if __name__ == "__main__":
                             None
                         )
             out_csv.writerow(entry)
+
+            for h in header_per_file_reduced:
+                for f in filenames:
+                    if f in files_involved:  # If data, append it
+                        fidx = files_involved.index(f)
+                        entry_reduced.append(
+                            file_rows[fidx][h].values[0]
+                        )
+                    else:  # If no data, append None
+                        entry_reduced.append(
+                            None
+                        )
+            out_csv_reduced.writerow(entry_reduced)
+
+            for h in header_per_minimal:
+                for f in filenames:
+                    if f in files_involved:  # If data, append it
+                        fidx = files_involved.index(f)
+                        entry_minimal.append(
+                            file_rows[fidx][h].values[0]
+                        )
+                    else:  # If no data, append None
+                        entry_minimal.append(
+                            None
+                        )
+            out_csv_minimal.writerow(entry_minimal)
 
     # Sanity-Check, check if all features were used by generating the final consensus table
     for key, val in dict_of_single_features_sanity_check.items():

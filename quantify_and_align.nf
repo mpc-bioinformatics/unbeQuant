@@ -12,6 +12,10 @@ params.qal_outdir = "$PWD/results"  // Output-Directory of the quantification re
 // Parameters for Feature Detection
 // params.resulolution_featurefinder = "-algortihm:mass_trace:mz_tolerance 0.02 -algorithm:isotopic_pattern:mz_tolerance 0.04"  // Parameters for Low Resolution Machines (E.G.: Q-TOF)
 params.qal_resolution_featurefinder = "-algorithm:mass_trace:mz_tolerance 0.004 -algorithm:isotopic_pattern:mz_tolerance 0.005"   // Parameters for High Resolution Machines (E.G.: LTQ-OrbiTrap)
+// REMOVE THE OTHTER TEST PARAMETERS!
+// params.qal_resolution_featurefinder = "-algorithm:mass_trace:mz_tolerance 0.005 -algorithm:isotopic_pattern:mz_tolerance 0.005 -algorithm:intensity:bins 15"   // TESTING!
+// params.qal_resolution_featurefinder = "-algorithm:mass_trace:mz_tolerance 0.005 -algorithm:isotopic_pattern:mz_tolerance 0.005 -algorithm:intensity:bins 15 -algorithm:feature:max_rt_span 5"   // TESTING!
+// params.qal_resolution_featurefinder = "-algorithm:mass_trace:mz_tolerance 0.008 -algorithm:isotopic_pattern:mz_tolerance 0.010 -algorithm:intensity:bins 15 -algorithm:feature:max_rt_span 7.5 -algorithm:feature:min_isotope_fit 0.7  -algorithm:seed:min_score 0.7 -algorithm:mass_trace:max_missing 3 -algorithm:mass_trace:slope_bound 0.1 "   // TESTING!
 params.qal_considered_charges_low = "2"  // Charges for the feature finder to use to extract features.
 params.qal_considered_charges_high = "7"  // Charges for the feature finder to use to extract features.
 params.qal_protgraph_was_used = false  // A Flag which is needed for the output to know which parsing mode and which column of "fasta_id" and "fasta_desc" needs to be taken
@@ -80,7 +84,7 @@ workflow quantify_and_align {
         generate_feature_ident_intesity_table(consensus_with_feature_tsvs)
 
     emit:
-        generate_feature_ident_intesity_table.out
+        generate_feature_ident_intesity_table.out[0]
         consensus_with_feature_tsvs
         match_feature_with_idents
 
@@ -99,6 +103,12 @@ process create_feature_xml {
     file("${mzml.baseName}.featureXML")
 
     """
+    # \$(get_cur_bin_dir.sh)/openms/usr/bin/NoiseFilterGaussian -in ${mzml} -out ${mzml.baseName}_filtered.mzML
+    # \$(get_cur_bin_dir.sh)/openms/usr/bin/FeatureFinderIsotopeWavelet -in ${mzml.baseName}_filtered.mzML -out ${mzml.baseName}.featureXML -algorithm:hr_data
+
+    # \$(get_cur_bin_dir.sh)/openms/usr/bin/FileFilter -in ${mzml} -out ${mzml.baseName}_filtered.mzML
+    # \$(get_cur_bin_dir.sh)/openms/usr/bin/FeatureFinderMultiplex -in ${mzml.baseName}_filtered.mzML -out ${mzml.baseName}.featureXML
+
     \$(get_cur_bin_dir.sh)/openms/usr/bin/FeatureFinderCentroided -in ${mzml} -out ${mzml.baseName}.featureXML -algorithm:isotopic_pattern:charge_low ${params.qal_considered_charges_low} -algorithm:isotopic_pattern:charge_high ${params.qal_considered_charges_high} ${params.qal_resolution_featurefinder}
     # We do not use multiplex, it seems to be broken. Mem usage is way over 40 GB per RAW file following by a "std::bad_alloc"
     """
@@ -180,7 +190,9 @@ process visualize_RT_transoformations {
     done
     CONCAT_TRAFOS=\$(echo \$CONCAT_TRAFOS | rev | cut -c2- | rev)
 
-    PYTHONUNBUFFERED=1 visualize_RT_alignment.py -trafo_xmls \$CONCAT_TRAFOS 
+    # Limit time, since kaleido does not stop (Bug: https://github.com/plotly/Kaleido/issues/134 )
+    PYTHONUNBUFFERED=1 timeout 3m visualize_RT_alignment.py -trafo_xmls \$CONCAT_TRAFOS  | true
+
     """
 }
 
@@ -194,6 +206,8 @@ process generate_feature_ident_intesity_table {
 
     output:
     file("raw_quantification_with_identifications.tsv")
+    file("quantification_with_identifications_reduced.tsv")
+    file("quantification_with_identifications_only_intensities_and_ids.tsv")
 
     """
     CONCAT_TSVS=""
@@ -203,6 +217,6 @@ process generate_feature_ident_intesity_table {
     done
     CONCAT_TSVS=\$(echo \$CONCAT_TSVS | rev | cut -c2- | rev)
 
-    PYTHONUNBUFFERED=1 consensus_and_features_to_tsv.py -featurexmls_tsvs  \$CONCAT_TSVS -consensus $consensus -out_tsv raw_quantification_with_identifications.tsv
+    PYTHONUNBUFFERED=1 consensus_and_features_to_tsv.py -featurexmls_tsvs  \$CONCAT_TSVS -consensus $consensus -out_tsv raw_quantification_with_identifications.tsv -out_tsv_reduced quantification_with_identifications_reduced.tsv -out_tsv_minimal quantification_with_identifications_only_intensities_and_ids.tsv
     """
 }
