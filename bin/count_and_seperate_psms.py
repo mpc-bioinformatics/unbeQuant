@@ -175,8 +175,9 @@ if __name__ == "__main__":
         (unique_psms, args.out_unique), (shared_psms, args.out_shared), 
         (unique_feature_psms, args.out_ft_unique), (shared_feature_psms, args.out_ft_shared)
     ]:
-        if len(psms) != 0:
-            with open(f_out, "w") as csv_out_file:
-                csv_out = csv.writer(csv_out_file, delimiter="\t")
-                csv_out.writerow(header)
+        
+        with open(f_out, "w") as csv_out_file:
+            csv_out = csv.writer(csv_out_file, delimiter="\t")
+            csv_out.writerow(header)
+            if len(psms) != 0:
                 csv_out.writerows(psms)
