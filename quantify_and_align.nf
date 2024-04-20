@@ -181,6 +181,7 @@ process visualize_RT_transoformations {
     output:
     file("*.png")
     file("*.html")
+    file("*.json")
 
     """
     CONCAT_TRAFOS=""

@@ -73,4 +73,5 @@ if __name__ == "__main__":
     )
     fig.update_xaxes(rangeslider=dict(visible=False))
     plotly.offline.plot(fig, filename="RT_transformation_all_measurements_single_plots_" + args.out_file_postfix + ".html", auto_open=False)
+    plotly.io.write_json(fig, "RT_transformation_all_measurements_single_plots_" + args.out_file_postfix + ".json")
     fig.write_image("RT_transformation_all_measurements_single_plots_" + args.out_file_postfix + ".png")

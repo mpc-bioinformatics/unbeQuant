@@ -1,0 +1,92 @@
+{
+    "directory": "<path to repository>",
+    "script": "main_workflow_protein_fasta.nf",
+    "nextflow_parameters": [
+        {
+            "name": "profile",
+            "value": "docker"
+        }
+    ],
+    "args": {
+        "dynamic": [
+            {
+                "type": "path",
+                "name": "main_raw_spectra_folder",
+                "label": "RAW files",
+                "desc": "Folder containing RAW files",
+                "selectable_files": false,
+                "selectable_folders": true
+            },
+            {
+                "type": "path",
+                "name": "main_fasta_file",
+                "label": "FASTA-Database",
+                "desc": "FASTA-file containing FASTA-entries",
+                "selectable_files": true,
+                "selectable_folders": false
+            },
+            {
+                "type": "path",
+                "name": "main_comet_params",
+                "label": "Comet-Search-Engine Configuration",
+                "desc": "Comet Search Engine Parameters File",
+                "selectable_files": true,
+                "selectable_folders": false
+            },
+            {
+                "type": "value-select",
+                "name": "resulolution_featurefinder",
+                "label": "Resolution of Machine (for the FeatureFinder)",
+                "desc": "Resolution of Machine (for the FeatureFinder)",
+                "options": [
+                    {
+                        "label": "High Resolution",
+                        "value": "-algorithm:mass_trace:mz_tolerance 0.004 -algorithm:isotopic_pattern:mz_tolerance 0.005"
+                    },
+                    {
+                        "label": "Low Resolution",
+                        "value": "-algortihm:mass_trace:mz_tolerance 0.02 -algorithm:isotopic_pattern:mz_tolerance 0.04"
+                    }
+                ],
+                "value": "-algorithm:mass_trace:mz_tolerance 0.004 -algorithm:isotopic_pattern:mz_tolerance 0.005"
+            },
+            {
+                "type": "value-select",
+                "name": "idc_fdr",
+                "label": "FDR (QValue) cutoff",
+                "desc": "FDR (QValue) cutoff",
+                "options": [
+                    {
+                        "label": "0.01% FDR",
+                        "value": "0.01"
+                    },
+                    {
+                        "label": "0.05% FDR",
+                        "value": "0.05"
+                    }
+                ],
+                "value": "0.01"
+            }
+        ],
+        "static": [
+            {
+                "name": "main_outdir",
+                "value": "results"
+            }
+        ]
+    },
+    "results": [
+        {
+            "type": "table",
+            "header": "Found Features",
+            "description": "Found Features across the measurements, containing the raw intensities",
+            "path": "results/quantifications/statistics______0.01_fdr/quantification_with_identifications_reduced.tsv"
+        },
+        {
+            "type": "plotly",
+            "header": "Retention Time alignment plot",
+            "description": "Retention Time alignment plot of all measurements. This plot can be used to check if the retention time alignment was successfull and also if some measurements may be outliers.",
+            "path": "results/quantifications/visualizations______0.01_fdr/RT_transformation_all_measurements_single_plots_.json"
+        }
+    ]
+}
