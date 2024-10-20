@@ -1,3 +1,6 @@
 [submodule "include/xic-extractor"]
 	path = include/xic-extractor
 	url = git@github.com:mpc-bioinformatics/xic-extractor.git
+[submodule "include/ProGFASTAGen"]
+	path = include/ProGFASTAGen
+	url = git@github.com:mpc-bioinformatics/ProGFASTAGen.git
