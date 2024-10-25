@@ -2,7 +2,7 @@
 nextflow.enable.dsl=2
 
 // Required Parameters
-params.qal_thermo_raws = "$PWD/raws"  // RAW-files
+params.qal_spectra_files = "$PWD/raws"  // .RAW/.d-files
 params.qal_mzmls = "$PWD/mzmls"  // mzML-files
 params.qal_idents = "$PWD/raws/tsvs"  // Folder containing Identifications in TSV-format
 params.qal_idents_blob_filter = "*qvalue_no_decoys_fdr_0.0[15].tsv"  // Should be TSV-files of Identification (already FDR-filtered), containing the columns: "charge", "plain_peptide", "used_score", "retention_time", "exp_mass_to_charge", "fasta_id", "fasta_desc"
@@ -21,20 +21,26 @@ params.qal_considered_charges_high = "7"  // Charges for the feature finder to u
 params.qal_protgraph_was_used = false  // A Flag which is needed for the output to know which parsing mode and which column of "fasta_id" and "fasta_desc" needs to be taken
 params.qal_limit_num_of_parallel_feature_finders = Runtime.runtime.availableProcessors()  // Number of process used to convert (CAUTION: This can be very resource intensive!)
 
+// Include the XIC-Extractor for Bruker and Thermo
+PROJECT_DIR = workflow.projectDir
+include {retrieve_xics_from_raw_spectra} from PROJECT_DIR + '/include/xic-extractor/main.nf'
+
+
 // Standalone MAIN Workflow
 workflow {
-    raw_files = Channel.fromPath(params.qal_thermo_raws  + "/*.raw")
+    raw_files = Channel.fromPath(params.qal_spectra_files  + "/*.raw")
+    d_files = Channel.fromPath(params.qal_spectra_files  + "/*.d", type: "dir")
+    spectra_files = raw_files.concat(d_files)
     mzmls = Channel.fromPath(params.qal_mzmls + "/*.mzML")
     identifications = Channel.fromPath(params.qal_idents + "/" + params.qal_idents_blob_filter)
     identifications_tuple = identifications
         .map { file -> tuple(
-            file.baseName.substring(file.baseName.indexOf("fdr_"), file.baseName.indexOf("fdr_") + 4), 
+            file.baseName.substring(file.baseName.indexOf("fdr_") + 4, file.baseName.indexOf("fdr_") + 8), 
             file
         ) }.groupTuple()
 
-
     quantify_and_align(
-        raw_files,
+        spectra_files,
         mzmls,
         identifications_tuple
     )
@@ -43,10 +49,10 @@ workflow {
 // Importable Workflow
 workflow quantify_and_align {
     take: 
-        // Takes raw files, the corresponding converted mzmls and the corresponding identifications 
-        // (in:  tuple(fdr, [list of identifications])) to it and maps them to features with quantitative 
+        // Takes raw/.d files, the corresponding converted mzmls and the corresponding identifications 
+        // (in:  tuple(fdr, [list of identifications])) and maps them to features with quantitative 
         // values.
-        raw_files
+        spectra_files
         mzmls
         identifications_tuple
     main: 
@@ -54,7 +60,7 @@ workflow quantify_and_align {
         create_feature_xml(mzmls)
 
         //// Generate file_identifier and match features with identifications (on multiple fdrs)
-        raw_files_tuple = raw_files.map { file -> tuple(file.baseName, file) }
+        spectra_files_tuple = spectra_files.map { file -> tuple(file.baseName, file) }
         featurexmls_tuple = create_feature_xml.out.map { file -> tuple(file.baseName, file) }
         // Get all the single fdrs
         in_identifications_tuple = identifications_tuple.transpose().map { it -> tuple(it[1].baseName.split("_____")[0], it[0], it[1]) }
@@ -66,11 +72,24 @@ workflow quantify_and_align {
 
         //// Retrieve the quant absolute values via the TRFP XIC
         // Get all the single fdrs
-        in_raw_files_tuple = in_identifications_tuple.map { it -> it[1] } .unique().combine(raw_files_tuple).map { it -> tuple(it[1], it[0], it[2]) }
+        in_spectra_files_tuple = in_identifications_tuple.map { it -> it[1] } .unique().combine(spectra_files_tuple).map { it -> tuple(it[1], it[0], it[2]) }
         // Match with identifications using file_identifier (it[0]) and fdr (it[1])
-        matched_ident_features_with_raws = match_feature_with_idents.out.join(in_raw_files_tuple, by: [0,1])
-        // Actually retrieve values using TRFP
-        extract_xics_and_save_to_tsv(matched_ident_features_with_raws)
+        matched_ident_features_with_raws = match_feature_with_idents.out.join(in_spectra_files_tuple, by: [0,1])
+        
+        //// Retrieve XICs in hdf5 format
+        // First, generate queries
+        generate_queries_from_featurexmls(matched_ident_features_with_raws)
+        // Then, extract via xic_extractor
+        extract_xics_channel = generate_queries_from_featurexmls.out.map {
+            it -> tuple(it[4], it[2])
+        }
+        retrieve_xics_from_raw_spectra(extract_xics_channel)
+        // Finally generate the resulting tsv file containing all the data
+        xics_and_remaining_data = retrieve_xics_from_raw_spectra.out.join(generate_queries_from_featurexmls.out, by: [0])
+
+        extracted_xics_from_hdf5_to_tsv(
+            xics_and_remaining_data.map {it -> tuple(it[0], it[2], it[1], it[3]) }
+        )
 
         //// Apply the MapAligner and Consensus_generator
         identified_features_by_fdr = match_feature_with_idents.out.map { it -> tuple(it[1], it[2]) }.groupTuple()
@@ -78,23 +97,23 @@ workflow quantify_and_align {
 
 
         //// Generate the final statistics and visualizations
-        fdr_and_feature_tsvs = extract_xics_and_save_to_tsv.out.map { it -> tuple(it[1], it[2]) }.groupTuple()
+        fdr_and_feature_tsvs = extracted_xics_from_hdf5_to_tsv.out.map { it -> tuple(it[1], it[2]) }.groupTuple()
         consensus_with_feature_tsvs = map_alignment_and_consensus_generation.out[0].join(fdr_and_feature_tsvs, by: 0)
         visualize_RT_transoformations(map_alignment_and_consensus_generation.out[1])
+
         generate_feature_ident_intesity_table(consensus_with_feature_tsvs)
 
     emit:
         generate_feature_ident_intesity_table.out[0]
         consensus_with_feature_tsvs
         match_feature_with_idents
-
-
 }
 
 
 process create_feature_xml {
     maxForks params.qal_limit_num_of_parallel_feature_finders
     stageInMode "copy"
+    container "luxii/unbequant:latest"
 
     input:
     file mzml
@@ -116,6 +135,8 @@ process create_feature_xml {
 
 
 process match_feature_with_idents {
+    container "luxii/unbequant:latest"
+
     input:
     tuple val(file_identifier), val(fdr), file(ident_tsv), file(featurexml)
 
@@ -128,25 +149,41 @@ process match_feature_with_idents {
     """
 }
 
-
-process extract_xics_and_save_to_tsv {
-    stageInMode "copy"
-    publishDir "${params.qal_outdir}/features_with_annotated_identifications", mode:'copy'
+process generate_queries_from_featurexmls {
+    publishDir "${params.qal_outdir}/extracted_xics", mode:'copy', pattern: '*-queries.csv'
+    container "luxii/unbequant:latest"
 
     input:
     tuple val(file_identifier), val(fdr), file(feature_with_idents), file(raw)
 
     output:
-    tuple val(file_identifier), val(fdr), file("${feature_with_idents.baseName}.tsv"), file(feature_with_idents)
+    tuple val(file_identifier), val(fdr), file("${raw.baseName}-queries.csv"), file(feature_with_idents), file(raw)
 
     """
-    features_to_tsv.py -trfp_executable \$(get_cur_bin_dir.sh)/ThermoRawFileParser/ThermoRawFileParser.exe -featurexml ${feature_with_idents} -rawfile ${raw} -out_tsv ${feature_with_idents.baseName}.tsv
+    features_to_xic_extractor_table.py -featurexml ${feature_with_idents} -out_csv ${raw.baseName}-queries.csv
+    """
+}
+
+process extracted_xics_from_hdf5_to_tsv {
+    publishDir "${params.qal_outdir}/features_with_annotated_identifications", mode:'copy'
+    container "luxii/unbequant:latest"
+
+
+    input:
+    tuple val(file_identifier), val(fdr), file(hdf5), file(original_query_file)
+
+    output:
+    tuple val(file_identifier), val(fdr), file("${hdf5.baseName}.tsv")
+
+    """
+    extract_hdf5_to_tsv.py -hdf5_xic_file ${hdf5} -xic_query_file ${original_query_file} -out_tsv ${hdf5.baseName}.tsv
     """
 }
 
 
 process map_alignment_and_consensus_generation {
     publishDir "${params.qal_outdir}/features_with_annotated_identifications", mode:'copy'
+    container "luxii/unbequant:latest"
 
     input:
     tuple val(fdr), file(features)
@@ -174,6 +211,7 @@ process map_alignment_and_consensus_generation {
 
 process visualize_RT_transoformations {
     publishDir "${params.qal_outdir}/visualizations___${fdr}", mode:'copy'
+    container "luxii/unbequant:latest"
 
     input:
     tuple val(fdr), file(trafo_xmls)
@@ -201,6 +239,7 @@ process visualize_RT_transoformations {
 
 process generate_feature_ident_intesity_table {
     publishDir "${params.qal_outdir}/statistics___${fdr}", mode:'copy'
+    container "luxii/unbequant:latest"
 
     input:
     tuple val(fdr), file(consensus), file(tsvs)

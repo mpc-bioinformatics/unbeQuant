@@ -31,7 +31,7 @@ if __name__ == "__main__":
     dict_of_single_features_sanity_check = dict()
 
     for ftsv in args.featurexmls_tsvs.split(","):
-        filename = ftsv.split(os.sep)[-1].split("_____", 1)[0]
+        filename = ".".join(ftsv.split(os.sep)[-1].split(".")[:-1])
         print("Loading features of file: {}".format(filename))
         dict_of_single_features[filename] = pd.read_csv(ftsv, sep='\t',
             converters={
@@ -86,6 +86,12 @@ if __name__ == "__main__":
         "charge"
     ]
 
+    global_headers = [
+        "global_min_mz",
+        "global_max_mz",
+        "global_min_rt",
+        "global_max_rt",
+    ]
     # Set File-Order
     filenames = sorted(dict_of_single_features.keys())
 
@@ -103,6 +109,8 @@ if __name__ == "__main__":
                 row_header.append(
                     f + "_____" + h
                 )
+        for gh in global_headers:
+            row_header.append(gh)
         out_csv.writerow(row_header)
 
         row_header = ["openms_ceid"]
@@ -111,6 +119,8 @@ if __name__ == "__main__":
                 row_header.append(
                     f + "_____" + h
                 )
+        for gh in global_headers:
+            row_header.append(gh)
         out_csv_reduced.writerow(row_header)
 
         row_header = ["openms_ceid"]
@@ -119,6 +129,8 @@ if __name__ == "__main__":
                 row_header.append(
                     f + "_____" + h
                 )
+        for gh in global_headers:
+            row_header.append(gh)
         out_csv_minimal.writerow(row_header)
 
         print("Writing consensus table")
@@ -141,6 +153,22 @@ if __name__ == "__main__":
                 # SanityCheck if Feature was also in ConsensusMap
                 dict_of_single_features_sanity_check[fi][file_rows[-1].index[0]] = True
 
+            mzs, mze, rts, rte = [], [], [], []
+            for f in filenames:
+                if f in files_involved:
+                    fidx = files_involved.index(f)
+                    if len(file_rows[fidx]["l_mz_start"].values[0]) != 0:
+                        mzs.append(file_rows[fidx]["l_mz_start"].values[0][0])
+                    if len(file_rows[fidx]["l_mz_end"].values[0]) != 0:
+                        mze.append(file_rows[fidx]["l_mz_end"].values[0][0])
+                    if len(file_rows[fidx]["l_rt_start"].values[0]) != 0:
+                        rts.append(file_rows[fidx]["l_rt_start"].values[0][0])
+                    if len(file_rows[fidx]["l_rt_end"].values[0]) != 0:
+                        rte.append(file_rows[fidx]["l_rt_end"].values[0][0])
+            global_info = [
+                min(mzs), max(mze), min(rts), max(rte)
+            ]
+
             # Now Add entry informatino
             for h in header_per_file:
                 for f in filenames:
@@ -153,7 +181,7 @@ if __name__ == "__main__":
                         entry.append(
                             None
                         )
-            out_csv.writerow(entry)
+            out_csv.writerow(entry + global_info)
 
             for h in header_per_file_reduced:
                 for f in filenames:
@@ -166,7 +194,7 @@ if __name__ == "__main__":
                         entry_reduced.append(
                             None
                         )
-            out_csv_reduced.writerow(entry_reduced)
+            out_csv_reduced.writerow(entry_reduced + global_info)
 
             for h in header_per_minimal:
                 for f in filenames:
@@ -179,7 +207,7 @@ if __name__ == "__main__":
                         entry_minimal.append(
                             None
                         )
-            out_csv_minimal.writerow(entry_minimal)
+            out_csv_minimal.writerow(entry_minimal + global_info)
 
     # Sanity-Check, check if all features were used by generating the final consensus table
     for key, val in dict_of_single_features_sanity_check.items():
