@@ -8,6 +8,10 @@ This workflow was implemented to be used on DDA-data.
 
 The workflow is containerized via docker. Please follow the [installation guide](https://docs.docker.com/engine/install/ubuntu/) for docker to have it installed in your system, if not already. The workflow can be run as is. Examples of some calls can be found further below.
 
+You can clone this project via:
+
+> git clone --recursive https://github.com/mpc-bioinformatics/unbeQuant
+
 ## Executing this workflow locally (Development)
 
 All dependencies can be downloaded via `compile_and_setup_dependencies.sh` for a local execution. Make sure you are in a Python-Environment,
