@@ -45,7 +45,7 @@ workflow {
     d_files = Channel.fromPath(params.main_raw_files_folder  + "/*.d", type: "dir")
     comet_params = Channel.fromPath(params.main_comet_params)
 
-    main_workflow_global_fasta(
+    main_unbequant_and_protgraph(
         sp_embl_file,
         raw_files,
         d_files,
