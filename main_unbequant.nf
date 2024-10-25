@@ -16,6 +16,7 @@ params.ctm_outdir =  "${params.main_outdir}/mgfs_mzmls"
 params.idc_outdir =  "${params.main_outdir}/identifications"
 params.sir_outdir =  "${params.main_outdir}/identifications_summarized"
 params.qal_outdir =  "${params.main_outdir}/quantifications"
+params.outdir =      "${params.main_outdir}/extraced_xics"
 
 // Set Parameters, since we use a FASTA generated not with ProtGraph
 params.sir_identification_from_protgraph = false
