@@ -1,6 +1,8 @@
 # UnbeQuant
 
-A worklfow which allows quantification of identified and unidentified feature points across multiple runs. We use a basic identification workflow, followed by a feature detection algorithm and use the results to annotated quantitative data points with identifiacation. These points are used as anchor points to align the retention times across multiple runs and summarizes the results in a large `tsv`-table.
+A worklfow which allows quantification of identified and unidentified feature points across multiple runs. We use a basic identification workflow, followed by a feature detection algorithm and use the results to annotate quantitative data points with identification infos. These points are used as anchor points to align the retention times across multiple runs and summarizes the results in a large `tsv`-table.
+
+This workflow was implemented to be used on DDA-data.
 
 ## Executing this workflow
 
