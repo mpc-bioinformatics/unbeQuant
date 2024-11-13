@@ -26,7 +26,11 @@ def parse_args():
 
 if __name__ == "__main__":
     args = parse_args()
-
+    args.featurexmls_tsvs = "/home/luxii/git/unbeQuant/work/76/9809275916634a5386656d998f01a1/TIM0002422std_S1-A2_1_2678.tsv,/home/luxii/git/unbeQuant/work/76/9809275916634a5386656d998f01a1/TIM0002583std_S1-A8_1_2841.tsv"
+    args.consensus = "/home/luxii/git/unbeQuant/work/76/9809275916634a5386656d998f01a1/consensus________0.01_fdr.consensusXML"
+    args.out_tsv = "/home/luxii/git/unbeQuant/work/76/9809275916634a5386656d998f01a1/c.tsv"
+    args.out_tsv_reduced = "/home/luxii/git/unbeQuant/work/76/9809275916634a5386656d998f01a1/b.tsv"
+    args.out_tsv_minimal = "/home/luxii/git/unbeQuant/work/76/9809275916634a5386656d998f01a1/a.tsv"
     dict_of_single_features = dict()
     dict_of_single_features_sanity_check = dict()
 
@@ -87,10 +91,14 @@ if __name__ == "__main__":
     ]
 
     global_headers = [
-        "global_min_mz",
-        "global_max_mz",
-        "global_min_rt",
-        "global_max_rt",
+        "first_iso_global_min_mz",
+        "first_iso_global_max_mz",
+        "first_iso_global_min_rt",
+        "first_iso_global_max_rt",
+        "feature_global_min_mz",
+        "feature_global_max_mz",
+        "feature_global_min_rt",
+        "feature_global_max_rt"
     ]
     # Set File-Order
     filenames = sorted(dict_of_single_features.keys())
@@ -158,15 +166,29 @@ if __name__ == "__main__":
                 if f in files_involved:
                     fidx = files_involved.index(f)
                     if len(file_rows[fidx]["l_mz_start"].values[0]) != 0:
-                        mzs.append(file_rows[fidx]["l_mz_start"].values[0][0])
+                        mzs.append(float(file_rows[fidx]["l_mz_start"].values[0][0]))
                     if len(file_rows[fidx]["l_mz_end"].values[0]) != 0:
-                        mze.append(file_rows[fidx]["l_mz_end"].values[0][0])
+                        mze.append(float(file_rows[fidx]["l_mz_end"].values[0][0]))
                     if len(file_rows[fidx]["l_rt_start"].values[0]) != 0:
-                        rts.append(file_rows[fidx]["l_rt_start"].values[0][0])
+                        rts.append(float(file_rows[fidx]["l_rt_start"].values[0][0]))
                     if len(file_rows[fidx]["l_rt_end"].values[0]) != 0:
-                        rte.append(file_rows[fidx]["l_rt_end"].values[0][0])
+                        rte.append(float(file_rows[fidx]["l_rt_end"].values[0][0]))
+
+            g_mzs, g_mze, g_rts, g_rte = [], [], [], []
+            for f in filenames:
+                if f in files_involved:
+                    fidx = files_involved.index(f)
+                    if len(file_rows[fidx]["l_mz_start"].values[0]) != 0:
+                        g_mzs.extend([float(x) for x in file_rows[fidx]["l_mz_start"].values[0]])
+                    if len(file_rows[fidx]["l_mz_end"].values[0]) != 0:
+                        g_mze.extend([float(x) for x in file_rows[fidx]["l_mz_end"].values[0]])
+                    if len(file_rows[fidx]["l_rt_start"].values[0]) != 0:
+                        g_rts.extend([float(x) for x in file_rows[fidx]["l_rt_start"].values[0]])
+                    if len(file_rows[fidx]["l_rt_end"].values[0]) != 0:
+                        g_rte.extend([float(x) for x in file_rows[fidx]["l_rt_end"].values[0]])
             global_info = [
-                min(mzs), max(mze), min(rts), max(rte)
+                min(mzs), max(mze), min(rts), max(rte),
+                min(g_mzs), max(g_mze), min(g_rts), max(g_rte)
             ]
 
             # Now Add entry informatino
