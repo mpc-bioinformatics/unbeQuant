@@ -26,11 +26,7 @@ def parse_args():
 
 if __name__ == "__main__":
     args = parse_args()
-    args.featurexmls_tsvs = "/home/luxii/git/unbeQuant/work/76/9809275916634a5386656d998f01a1/TIM0002422std_S1-A2_1_2678.tsv,/home/luxii/git/unbeQuant/work/76/9809275916634a5386656d998f01a1/TIM0002583std_S1-A8_1_2841.tsv"
-    args.consensus = "/home/luxii/git/unbeQuant/work/76/9809275916634a5386656d998f01a1/consensus________0.01_fdr.consensusXML"
-    args.out_tsv = "/home/luxii/git/unbeQuant/work/76/9809275916634a5386656d998f01a1/c.tsv"
-    args.out_tsv_reduced = "/home/luxii/git/unbeQuant/work/76/9809275916634a5386656d998f01a1/b.tsv"
-    args.out_tsv_minimal = "/home/luxii/git/unbeQuant/work/76/9809275916634a5386656d998f01a1/a.tsv"
+
     dict_of_single_features = dict()
     dict_of_single_features_sanity_check = dict()
 
