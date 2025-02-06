@@ -19,7 +19,7 @@ to prevent errors or dependency conflicts with the operating systems package man
 
 The docker can be created via: 
 
-> docker build -t unbeqonet:local . -f docker/Dockerfile
+> docker build -t luxii/unbequant:latest . -f docker/Dockerfile
 
 
 # Example Call

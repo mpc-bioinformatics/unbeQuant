@@ -8,18 +8,15 @@ params.qal_idents = "$PWD/raws/tsvs"  // Folder containing Identifications in TS
 params.qal_idents_blob_filter = "*qvalue_no_decoys_fdr_0.0[15].tsv"  // Should be TSV-files of Identification (already FDR-filtered), containing the columns: "charge", "plain_peptide", "used_score", "retention_time", "exp_mass_to_charge", "fasta_id", "fasta_desc"
 params.qal_outdir = "$PWD/results"  // Output-Directory of the quantification results (splitted by the fdr)
 
-
-// Parameters for Feature Detection
-// params.resulolution_featurefinder = "-algortihm:mass_trace:mz_tolerance 0.02 -algorithm:isotopic_pattern:mz_tolerance 0.04"  // Parameters for Low Resolution Machines (E.G.: Q-TOF)
-params.qal_resolution_featurefinder = "-algorithm:mass_trace:mz_tolerance 0.004 -algorithm:isotopic_pattern:mz_tolerance 0.005"   // Parameters for High Resolution Machines (E.G.: LTQ-OrbiTrap)
-// REMOVE THE OTHTER TEST PARAMETERS!
-// params.qal_resolution_featurefinder = "-algorithm:mass_trace:mz_tolerance 0.005 -algorithm:isotopic_pattern:mz_tolerance 0.005 -algorithm:intensity:bins 15"   // TESTING!
-// params.qal_resolution_featurefinder = "-algorithm:mass_trace:mz_tolerance 0.005 -algorithm:isotopic_pattern:mz_tolerance 0.005 -algorithm:intensity:bins 15 -algorithm:feature:max_rt_span 5"   // TESTING!
-// params.qal_resolution_featurefinder = "-algorithm:mass_trace:mz_tolerance 0.008 -algorithm:isotopic_pattern:mz_tolerance 0.010 -algorithm:intensity:bins 15 -algorithm:feature:max_rt_span 7.5 -algorithm:feature:min_isotope_fit 0.7  -algorithm:seed:min_score 0.7 -algorithm:mass_trace:max_missing 3 -algorithm:mass_trace:slope_bound 0.1 "   // TESTING!
-params.qal_considered_charges_low = "2"  // Charges for the feature finder to use to extract features.
-params.qal_considered_charges_high = "7"  // Charges for the feature finder to use to extract features.
+// Optional Parameters
+params.qal_charge_low = 1  // Charges for the feature finder to use to extract features.
+params.qal_charge_high = 8 // See above
+params.qal_ppm_tolerance = 5 // Tolerance for the biosaur2 to use to map identifications on it, as well as to generate features
+params.qal_additional_biosaur_parameters  = "" // Additional parameters for biosaur2
+params.qal_rt_enlarge_factor = 0.5  // Factor to enlarge the RT-window for matching MS2 with features
 params.qal_protgraph_was_used = false  // A Flag which is needed for the output to know which parsing mode and which column of "fasta_id" and "fasta_desc" needs to be taken
 params.qal_limit_num_of_parallel_feature_finders = Runtime.runtime.availableProcessors()  // Number of process used to convert (CAUTION: This can be very resource intensive!)
+params.qal_ppm_tolerance = 5  // PPM tolerance for the biosaur2 feature finder
 
 // Include the XIC-Extractor for Bruker and Thermo
 PROJECT_DIR = workflow.projectDir
@@ -67,10 +64,11 @@ workflow quantify_and_align {
         // Match with identifications using file_identifier (it[0]) and fdr (it[1])
         in_featurexmls_tuple = in_identifications_tuple.map { it -> it[1] } .unique().combine(featurexmls_tuple).map { it -> tuple(it[1], it[0], it[2]) }
         matched_features_with_idents_tuple = in_identifications_tuple.join(in_featurexmls_tuple, by: [0,1])
+        mzmls_tuple = mzmls.map { file -> tuple(file.baseName, file) }
         // Do the actual matching
         match_feature_with_idents(matched_features_with_idents_tuple)
 
-        //// Retrieve the quant absolute values via the TRFP XIC
+        //// Retrieve the quant absolute values via the XIC Extraction
         // Get all the single fdrs
         in_spectra_files_tuple = in_identifications_tuple.map { it -> it[1] } .unique().combine(spectra_files_tuple).map { it -> tuple(it[1], it[0], it[2]) }
         // Match with identifications using file_identifier (it[0]) and fdr (it[1])
@@ -111,9 +109,10 @@ workflow quantify_and_align {
 
 
 process create_feature_xml {
-    maxForks params.qal_limit_num_of_parallel_feature_finders
+    maxForks 1 //params.qal_limit_num_of_parallel_feature_finders
     stageInMode "copy"
     container "luxii/unbequant:latest"
+    memory "18G"
 
     input:
     file mzml
@@ -122,20 +121,16 @@ process create_feature_xml {
     file("${mzml.baseName}.featureXML")
 
     """
-    # \$(get_cur_bin_dir.sh)/openms/usr/bin/NoiseFilterGaussian -in ${mzml} -out ${mzml.baseName}_filtered.mzML
-    # \$(get_cur_bin_dir.sh)/openms/usr/bin/FeatureFinderIsotopeWavelet -in ${mzml.baseName}_filtered.mzML -out ${mzml.baseName}.featureXML -algorithm:hr_data
+    biosaur2 ${params.qal_additional_biosaur_parameters} -htol ${params.qal_ppm_tolerance} -itol ${params.qal_ppm_tolerance} -iuse -1 -cmin ${params.qal_charge_low} -cmax ${params.qal_charge_high} -write_hills -write_extra_details ${mzml}
 
-    # \$(get_cur_bin_dir.sh)/openms/usr/bin/FileFilter -in ${mzml} -out ${mzml.baseName}_filtered.mzML
-    # \$(get_cur_bin_dir.sh)/openms/usr/bin/FeatureFinderMultiplex -in ${mzml.baseName}_filtered.mzML -out ${mzml.baseName}.featureXML
-
-    \$(get_cur_bin_dir.sh)/openms/usr/bin/FeatureFinderCentroided -in ${mzml} -out ${mzml.baseName}.featureXML -algorithm:isotopic_pattern:charge_low ${params.qal_considered_charges_low} -algorithm:isotopic_pattern:charge_high ${params.qal_considered_charges_high} ${params.qal_resolution_featurefinder}
-    # We do not use multiplex, it seems to be broken. Mem usage is way over 40 GB per RAW file following by a "std::bad_alloc"
+    convert_biosaur2_to_featurexml.py --mzml ${mzml} --feature_tsv ${mzml.baseName}.features.tsv --rt_enlarge_factor ${params.qal_rt_enlarge_factor} --hills_tsv ${mzml.baseName}.hills.tsv --mz_tolerance ${params.qal_ppm_tolerance} --output_featurexml ${mzml.baseName}.featureXML
     """
 }
 
 
 process match_feature_with_idents {
     container "luxii/unbequant:latest"
+    publishDir "${params.qal_outdir}/features_with_annotated_identifications", mode:'copy'
 
     input:
     tuple val(file_identifier), val(fdr), file(ident_tsv), file(featurexml)
@@ -144,8 +139,7 @@ process match_feature_with_idents {
     tuple val(file_identifier), val(fdr), file("${featurexml.baseName}_____${fdr}_____with_identifications.featureXML")
 
     """
-    convert_ident_to_idXML.py -use_protgraph ${params.qal_protgraph_was_used} -tsv_file ${ident_tsv} -o ${ident_tsv.baseName}.idXML
-    \$(get_cur_bin_dir.sh)/openms/usr/bin/IDMapper -id ${ident_tsv.baseName}.idXML -mz_reference precursor -in ${featurexml} -out ${featurexml.baseName}_____${fdr}_____with_identifications.featureXML
+    map_features_with_idents.py -featureXML ${featurexml} -use_protgraph ${params.qal_protgraph_was_used} -tsv_file ${ident_tsv} -out_featurexml ${featurexml.baseName}_____${fdr}_____with_identifications.featureXML
     """
 }
 

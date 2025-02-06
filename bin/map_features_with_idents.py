@@ -11,8 +11,9 @@ import pandas as pd
 def argparse_setup():
     parser = argparse.ArgumentParser()
     parser.add_argument("-tsv_file", help="The tsv-Identification file, containing the needed columns")
+    parser.add_argument("-featureXML", help="The featureXML file, containing the user param about the MS2 scans")
     parser.add_argument("-use_protgraph", help="Flag to either include fasta_ids (not protgraph) or fasta_descs (protgraph)")
-    parser.add_argument("-out_idxml", help="The Output idxml")
+    parser.add_argument("-out_featurexml", help="The Output feature XML file with annotated identifications")
 
     return parser.parse_args()
 
@@ -25,6 +26,14 @@ if __name__ == "__main__":
     else:
         column_ident = "fasta_acc"
 
+
+    # Load features without idents
+    features = pyopenms.FeatureMap()
+    fh = pyopenms.FeatureXMLFile()
+    fh.load(args.featureXML, features)
+
+
+    # Load the identifications
     run_name = args.tsv_file.split(os.sep)[-1]
     # Taken and modified from https://github.com/OpenMS/OpenMS/issues/4417
     psms = pd.read_csv(args.tsv_file, sep='\t', header=0)
@@ -46,6 +55,35 @@ if __name__ == "__main__":
         peptide_id.setHits([peptide_hit])
         peptide_ids.append(peptide_id)
 
+
     protein_id = pyopenms.ProteinIdentification()
     protein_id.setIdentifier(run_name)
-    pyopenms.IdXMLFile().store(args.out_idxml, [protein_id], peptide_ids)
+
+
+    # Write the featureXML with identifications
+    ident_features = pyopenms.FeatureMap()
+
+    ident_features.setUniqueId(features.getUniqueId())  # Needed for the ConsensusMap generation via OpenMs
+    ident_features.setMetaValue("spectra_data", features.getMetaValue("spectra_data"))  # Needed for the ConsensusMap generation
+    ident_fh = pyopenms.FeatureXMLFile()
+    ident_features.setProteinIdentifications([protein_id])
+
+    ident_idcs = []
+    for f in features:
+        # Get Scan Idx and check if it has an identification
+        scans = f.getMetaValue("unbeQuant_MS2_Scan_Map")        
+        idcs = psms.index[psms["scan"].isin(scans)].tolist()
+
+        # Add the Identification to the features and keep track of add rows
+        f.setPeptideIdentifications([peptide_ids[idx] for idx in idcs])
+        f.setMetaValue("unbeQuant_MS2_Scan_Map", scans)
+        ident_idcs.extend(idcs)
+
+        # Append feature to the output
+        ident_features.push_back(f)
+
+    # Add unassigned identifications
+    unassigned_idcs = set(range(len(psms))).difference(set(ident_idcs))
+    ident_features.setUnassignedPeptideIdentifications([peptide_ids[idx] for idx in unassigned_idcs])
+    ident_fh.store(args.out_featurexml, ident_features)
+
