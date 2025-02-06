@@ -37,6 +37,7 @@ if __name__ == "__main__":
     fm_charge = feature_mapping_headers.index("charge")
     fm_pep_idents = feature_mapping_headers.index("pep_idents")
     fm_prot_idents = feature_mapping_headers.index("prot_idents")
+    fm_ms2_scans = feature_mapping_headers.index("ms2_scans")
     fm_mz_start = feature_mapping_headers.index("mz_start")
     fm_mz_end = feature_mapping_headers.index("mz_end")
     fm_rt_start = feature_mapping_headers.index("rt_start")
@@ -55,8 +56,8 @@ if __name__ == "__main__":
             tsv_rows[-1][6].append(fm[fm_mz_end]) # Append mz_end
             tsv_rows[-1][7].append(float(fm[fm_rt_start]) * 60) # Append rt_start
             tsv_rows[-1][8].append(float(fm[fm_rt_end]) * 60) # Append rt_end
-            tsv_rows[-1][9].append(list(h5["intensities"][idx])) # Append retentiontime
-            tsv_rows[-1][10].append(list(h5["retention_times"][idx])) # Append intensity
+            tsv_rows[-1][9].append(list(h5["retention_times"][idx])) # Append retentiontime
+            tsv_rows[-1][10].append(list(h5["intensities"][idx])) # Append intensity
 
         else:
             prev_id = fm[fm_identifier]
@@ -75,7 +76,8 @@ if __name__ == "__main__":
                 [float(fm[fm_rt_start]) * 60], # rt_starts in seconds
                 [float(fm[fm_rt_end]) * 60], # rt_ends in seconds
                 [list(h5["retention_times"][idx])], # retentiontimes
-                [list(h5["intensities"][idx])] # intensities
+                [list(h5["intensities"][idx])], # intensities
+                fm[fm_ms2_scans] # ms2_scans
             ])   
 
     # Write final table
@@ -94,7 +96,8 @@ if __name__ == "__main__":
             "l_rt_start",
             "l_rt_end",
             "l_retention_times",
-            "l_intensities"
+            "l_intensities",
+            "l_ms2_scans"
         ])
 
         # Write data

@@ -40,6 +40,8 @@ pip install pyopenms==3.1.0
 pip install h5py
 # Exporting figures
 pip install kaleido
+# Install biosaur2
+pip install biosaur2
 
 
 ##### Make all files in bin executable (excluding sub-directories) to be visible by processes in Nextflow

@@ -42,7 +42,8 @@ if __name__ == "__main__":
                 "l_rt_start": literal_eval,
                 "l_rt_end": literal_eval,
                 "l_retention_times": literal_eval,
-                "l_intensities": literal_eval
+                "l_intensities": literal_eval,
+                "l_ms2_scans": literal_eval
                 }
         )
         dict_of_single_features_sanity_check[filename] = [False]*len(dict_of_single_features[filename])
@@ -64,6 +65,7 @@ if __name__ == "__main__":
         "l_prot_ident",
         "openms_fid",
         "charge",
+        "l_ms2_scans",
         "l_mz_start",
         "l_mz_end",
         "l_rt_start",
@@ -78,12 +80,14 @@ if __name__ == "__main__":
         "l_prot_ident",
         "openms_fid",
         "charge",
+        "l_ms2_scans",
     ]
 
     header_per_minimal = [
         "sum_intensity",
         "openms_fid",
-        "charge"
+        "charge",
+        "l_ms2_scans",
     ]
 
     global_headers = [

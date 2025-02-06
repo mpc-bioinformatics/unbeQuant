@@ -33,6 +33,8 @@ if __name__ == "__main__":
     for feature in fmap:
         # For each feature
 
+        scans = feature.getMetaValue("unbeQuant_MS2_Scan_Map")
+
         pep_idents = []
         prot_idents = []
         for pep_id in feature.getPeptideIdentifications():
@@ -61,7 +63,7 @@ if __name__ == "__main__":
             queries.append(d)
 
             # TODO Identification is missing
-            features_mapping.append(("f_" + str(feature.getUniqueId()), mz_start, mz_end, rt_start, rt_end, feature.getCharge(), pep_idents, prot_idents))
+            features_mapping.append(("f_" + str(feature.getUniqueId()), mz_start, mz_end, rt_start, rt_end, feature.getCharge(), pep_idents, prot_idents, scans))
 
 
     # Write query file for xic-extractor
@@ -70,11 +72,11 @@ if __name__ == "__main__":
 
         csv_out.writerow([
             "identifier", "mz_start", "mz_end", "rt_start", "rt_end", "mz", "ppm", "ms_level", ## Needed for the xic_extractor
-            "charge", "pep_idents", "prot_idents"
+            "charge", "pep_idents", "prot_idents", "ms2_scans"
         ])
 
         for fm, q in zip(features_mapping, queries):
             csv_out.writerow([
                 fm[0], q["mz_start"], q["mz_end"], q["rt_start"], q["rt_end"], None, None, "ms",
-                fm[5], fm[6], fm[7]
+                fm[5], fm[6], fm[7], fm[8]
             ])
