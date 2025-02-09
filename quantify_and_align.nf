@@ -17,7 +17,7 @@ params.qal_rt_enlarge_factor = 0.5  // Factor to enlarge the RT-window for match
 params.qal_protgraph_was_used = false  // A Flag which is needed for the output to know which parsing mode and which column of "fasta_id" and "fasta_desc" needs to be taken
 params.qal_limit_num_of_parallel_feature_finders = Runtime.runtime.availableProcessors()  // Number of process used to convert (CAUTION: This can be very resource intensive!)
 params.qal_ppm_tolerance = 5  // PPM tolerance for the biosaur2 feature finder
-
+params.qal_minlh = 7  // Minimum number of MS1 scans to be considered for a feature. Check out biosaur2 documnentation to set the correct value
 // Include the XIC-Extractor for Bruker and Thermo
 PROJECT_DIR = workflow.projectDir
 include {retrieve_xics_from_raw_spectra} from PROJECT_DIR + '/include/xic-extractor/main.nf'
@@ -100,6 +100,7 @@ workflow quantify_and_align {
         visualize_RT_transoformations(map_alignment_and_consensus_generation.out[1])
 
         generate_feature_ident_intesity_table(consensus_with_feature_tsvs)
+        generate_xlsx_reports_from_tables(generate_feature_ident_intesity_table.out)
 
     emit:
         generate_feature_ident_intesity_table.out[0]
@@ -109,7 +110,7 @@ workflow quantify_and_align {
 
 
 process create_feature_xml {
-    maxForks 1 //params.qal_limit_num_of_parallel_feature_finders
+    maxForks params.qal_limit_num_of_parallel_feature_finders
     stageInMode "copy"
     container "luxii/unbequant:latest"
     memory "18G"
@@ -121,7 +122,7 @@ process create_feature_xml {
     file("${mzml.baseName}.featureXML")
 
     """
-    biosaur2 ${params.qal_additional_biosaur_parameters} -htol ${params.qal_ppm_tolerance} -itol ${params.qal_ppm_tolerance} -iuse -1 -cmin ${params.qal_charge_low} -cmax ${params.qal_charge_high} -write_hills -write_extra_details ${mzml}
+    biosaur2 ${params.qal_additional_biosaur_parameters} -minlh ${params.qal_minlh} -htol ${params.qal_ppm_tolerance} -itol ${params.qal_ppm_tolerance} -iuse -1 -cmin ${params.qal_charge_low} -cmax ${params.qal_charge_high} -write_hills -write_extra_details ${mzml}
 
     convert_biosaur2_to_featurexml.py --mzml ${mzml} --feature_tsv ${mzml.baseName}.features.tsv --rt_enlarge_factor ${params.qal_rt_enlarge_factor} --hills_tsv ${mzml.baseName}.hills.tsv --mz_tolerance ${params.qal_ppm_tolerance} --output_featurexml ${mzml.baseName}.featureXML
     """
@@ -239,9 +240,7 @@ process generate_feature_ident_intesity_table {
     tuple val(fdr), file(consensus), file(tsvs)
 
     output:
-    file("raw_quantification_with_identifications.tsv")
-    file("quantification_with_identifications_reduced.tsv")
-    file("quantification_with_identifications_only_intensities_and_ids.tsv")
+    tuple val(fdr), file("raw_quantification_with_identifications.tsv"), file("quantification_with_identifications_reduced.tsv"), file("quantification_with_identifications_only_intensities_and_ids.tsv")
 
     """
     CONCAT_TSVS=""
@@ -254,3 +253,108 @@ process generate_feature_ident_intesity_table {
     PYTHONUNBUFFERED=1 consensus_and_features_to_tsv.py -featurexmls_tsvs  \$CONCAT_TSVS -consensus $consensus -out_tsv raw_quantification_with_identifications.tsv -out_tsv_reduced quantification_with_identifications_reduced.tsv -out_tsv_minimal quantification_with_identifications_only_intensities_and_ids.tsv
     """
 }
+
+
+
+process generate_xlsx_reports_from_tables {
+    publishDir "${params.qal_outdir}/statistics___${fdr}", mode:'copy'
+    container "luxii/unbequant:latest"
+
+    input:
+    tuple val(fdr), file(full_file), file(reduced_file), file(minimal_file)
+
+    output:
+    file("*.xlsx")
+
+    """
+    echo '
+sections:
+  Identifier:
+    columns: ["openms_ceid"]
+    format: "str"
+    supheader: "Unique Identifier"
+    border: True
+    width: 128
+    header_format: {shrink: True}
+  Intensities:
+    tag: "_____sum_intensity\$"
+    supheader: "RAW Intensities"
+    format: "float"
+    remove_tag: True
+    border: True
+    width: 96
+    header_format: {shrink: True}
+  Peptide_identification:
+    tag: "_____l_pep_ident\$"
+    supheader: "Peptide Identification"
+    format: "str"
+    remove_tag: True
+    border: True
+    width: 96
+    header_format: {shrink: True}
+  Protein_identification:
+    tag: "_____l_prot_ident\$"
+    supheader: "Protein Identification"
+    format: "str"
+    remove_tag: True
+    border: True
+    width: 96
+    header_format: {shrink: True}
+  Charge:
+    tag: "_____charge\$"
+    supheader: "Charge"
+    format: "int"
+    remove_tag: True
+    border: True
+    width: 96
+    header_format: {shrink: True}
+  MS2_Scans:
+    tag: "_____l_ms2_scans\$"
+    supheader: "Mapped MS2 Scans"
+    format: "str"
+    remove_tag: True
+    border: True
+    width: 96
+    header_format: {shrink: True}
+  Feature_Global_Boundaries:
+    columns: ["feature_global_min_mz", "feature_global_max_mz", "feature_global_min_rt", "feature_global_max_rt"]
+    supheader: "Feature Global Boundaries"
+    format: "float"
+    border: True
+  Feature_First_Isotope_Boundaries:
+    columns: ["first_iso_global_min_mz", "first_iso_global_max_mz", "first_iso_global_min_rt", "first_iso_global_max_rt"]
+    supheader: "Feature First Isotope Boundaries"
+    format: "float"
+    border: True
+  Feauture_IDs:
+    tag: "_____openms_fid\$"
+    supheader: "Feature IDs"
+    format: "str"
+    remove_tag: True
+    border: True
+  Single_Isotope_Boundaries:
+    tag: "(_____l_mz_start|_____l_mz_end|_____l_rt_start|_____l_rt_end)\$"
+    supheader: "Single Isotope Boundaries"
+    format: "str"
+    border: True
+  XICs:
+    tag: "(_____l_intensities|_____l_retention_times)\$"
+    supheader: "XICs of each isotope"
+    format: "str"
+    border: True
+
+formats:
+  header: {"bold": True, "align": "center", "bottom": 2}
+  supheader: {"bold": True, "align": "center", "bottom": 2}
+
+settings:
+  write_supheader: True
+  add_autofilter: False
+' > config.yaml
+
+    PYTHONUNBUFFERED=1 xlsxreport compile ${full_file} config.yaml
+    PYTHONUNBUFFERED=1 xlsxreport compile ${reduced_file} config.yaml
+    PYTHONUNBUFFERED=1 xlsxreport compile ${minimal_file} config.yaml
+    """
+}
+
