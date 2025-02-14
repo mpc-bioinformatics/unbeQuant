@@ -42,7 +42,7 @@ pip install h5py
 pip install kaleido
 # Install biosaur2
 pip install biosaur2
-pip install xlsxreport
+pip install xlsxwriter
 
 
 ##### Make all files in bin executable (excluding sub-directories) to be visible by processes in Nextflow

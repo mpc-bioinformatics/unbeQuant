@@ -179,6 +179,7 @@ process extracted_xics_from_hdf5_to_tsv {
 process map_alignment_and_consensus_generation {
     publishDir "${params.qal_outdir}/features_with_annotated_identifications", mode:'copy'
     container "luxii/unbequant:latest"
+    cpus 8
 
     input:
     tuple val(fdr), file(features)
@@ -200,7 +201,7 @@ process map_alignment_and_consensus_generation {
     \$(get_cur_bin_dir.sh)/openms/usr/bin/MapAlignerTreeGuided -in ${features} -out \${NEW_FEATURES[@]} -trafo_out \${NEW_FEATURES_TRAFO[@]}
 
     # Consensus Generation
-    \$(get_cur_bin_dir.sh)/openms/usr/bin/FeatureLinkerUnlabeled -in \${NEW_FEATURES[@]} -out consensus_____${fdr}.consensusXML
+    \$(get_cur_bin_dir.sh)/openms/usr/bin/FeatureLinkerUnlabeled -threads 8 -in \${NEW_FEATURES[@]} -out consensus_____${fdr}.consensusXML
     """
 }
 
@@ -267,94 +268,9 @@ process generate_xlsx_reports_from_tables {
     file("*.xlsx")
 
     """
-    echo '
-sections:
-  Identifier:
-    columns: ["openms_ceid"]
-    format: "str"
-    supheader: "Unique Identifier"
-    border: True
-    width: 128
-    header_format: {shrink: True}
-  Intensities:
-    tag: "_____sum_intensity\$"
-    supheader: "RAW Intensities"
-    format: "float"
-    remove_tag: True
-    border: True
-    width: 96
-    header_format: {shrink: True}
-  Peptide_identification:
-    tag: "_____l_pep_ident\$"
-    supheader: "Peptide Identification"
-    format: "str"
-    remove_tag: True
-    border: True
-    width: 96
-    header_format: {shrink: True}
-  Protein_identification:
-    tag: "_____l_prot_ident\$"
-    supheader: "Protein Identification"
-    format: "str"
-    remove_tag: True
-    border: True
-    width: 96
-    header_format: {shrink: True}
-  Charge:
-    tag: "_____charge\$"
-    supheader: "Charge"
-    format: "int"
-    remove_tag: True
-    border: True
-    width: 96
-    header_format: {shrink: True}
-  MS2_Scans:
-    tag: "_____l_ms2_scans\$"
-    supheader: "Mapped MS2 Scans"
-    format: "str"
-    remove_tag: True
-    border: True
-    width: 96
-    header_format: {shrink: True}
-  Feature_Global_Boundaries:
-    columns: ["feature_global_min_mz", "feature_global_max_mz", "feature_global_min_rt", "feature_global_max_rt"]
-    supheader: "Feature Global Boundaries"
-    format: "float"
-    border: True
-  Feature_First_Isotope_Boundaries:
-    columns: ["first_iso_global_min_mz", "first_iso_global_max_mz", "first_iso_global_min_rt", "first_iso_global_max_rt"]
-    supheader: "Feature First Isotope Boundaries"
-    format: "float"
-    border: True
-  Feauture_IDs:
-    tag: "_____openms_fid\$"
-    supheader: "Feature IDs"
-    format: "str"
-    remove_tag: True
-    border: True
-  Single_Isotope_Boundaries:
-    tag: "(_____l_mz_start|_____l_mz_end|_____l_rt_start|_____l_rt_end)\$"
-    supheader: "Single Isotope Boundaries"
-    format: "str"
-    border: True
-  XICs:
-    tag: "(_____l_intensities|_____l_retention_times)\$"
-    supheader: "XICs of each isotope"
-    format: "str"
-    border: True
-
-formats:
-  header: {"bold": True, "align": "center", "bottom": 2}
-  supheader: {"bold": True, "align": "center", "bottom": 2}
-
-settings:
-  write_supheader: True
-  add_autofilter: False
-' > config.yaml
-
-    PYTHONUNBUFFERED=1 xlsxreport compile ${full_file} config.yaml
-    PYTHONUNBUFFERED=1 xlsxreport compile ${reduced_file} config.yaml
-    PYTHONUNBUFFERED=1 xlsxreport compile ${minimal_file} config.yaml
+    PYTHONUNBUFFERED=1 write_xlsx_report.py -i ${full_file} -o ${full_file.baseName}.report.xlsx
+    PYTHONUNBUFFERED=1 write_xlsx_report.py -i ${reduced_file} -o ${reduced_file.baseName}.report.xlsx
+    PYTHONUNBUFFERED=1 write_xlsx_report.py -i ${minimal_file} -o ${minimal_file.baseName}.report.xlsx
     """
 }
 
