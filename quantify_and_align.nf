@@ -15,6 +15,7 @@ params.qal_ppm_tolerance = 5 // Tolerance for the biosaur2 to use to map identif
 params.qal_additional_biosaur_parameters  = "" // Additional parameters for biosaur2
 params.qal_rt_enlarge_factor = 0.5  // Factor to enlarge the RT-window for matching MS2 with features
 params.qal_protgraph_was_used = false  // A Flag which is needed for the output to know which parsing mode and which column of "fasta_id" and "fasta_desc" needs to be taken
+params.qal_mini = 1  // Minimum intensity for biosaur2 to consider a peak for feature finding
 params.qal_limit_num_of_parallel_feature_finders = Runtime.runtime.availableProcessors()  // Number of process used to convert (CAUTION: This can be very resource intensive!)
 params.qal_ppm_tolerance = 5  // PPM tolerance for the biosaur2 feature finder
 params.qal_minlh = 7  // Minimum number of MS1 scans to be considered for a feature. Check out biosaur2 documnentation to set the correct value
@@ -122,7 +123,7 @@ process create_feature_xml {
     file("${mzml.baseName}.featureXML")
 
     """
-    biosaur2 ${params.qal_additional_biosaur_parameters} -minlh ${params.qal_minlh} -htol ${params.qal_ppm_tolerance} -itol ${params.qal_ppm_tolerance} -iuse -1 -cmin ${params.qal_charge_low} -cmax ${params.qal_charge_high} -write_hills -write_extra_details ${mzml}
+    biosaur2 ${params.qal_additional_biosaur_parameters} -minlh ${params.qal_minlh} -mini ${params.qal_mini} -htol ${params.qal_ppm_tolerance} -itol ${params.qal_ppm_tolerance} -iuse -1 -cmin ${params.qal_charge_low} -cmax ${params.qal_charge_high} -write_hills -write_extra_details ${mzml}
 
     convert_biosaur2_to_featurexml.py --mzml ${mzml} --feature_tsv ${mzml.baseName}.features.tsv --rt_enlarge_factor ${params.qal_rt_enlarge_factor} --hills_tsv ${mzml.baseName}.hills.tsv --mz_tolerance ${params.qal_ppm_tolerance} --output_featurexml ${mzml.baseName}.featureXML
     """
