@@ -27,6 +27,12 @@ def parse_args():
 if __name__ == "__main__":
     args = parse_args()
 
+    args.featurexmls_tsvs = ""
+    args.consensus = ""
+    args.out_tsv = "test.tsv"
+    args.out_tsv_reduced = "test_reduced.tsv"
+    args.out_tsv_minimal = "testminimal.tsv"
+
     dict_of_single_features = dict()
     dict_of_single_features_sanity_check = dict()
 
@@ -60,7 +66,7 @@ if __name__ == "__main__":
 
     # Set header order
     header_per_file = [
-        "sum_intensity",
+        "intensity",
         "l_pep_ident",
         "l_prot_ident",
         "openms_fid",
@@ -75,7 +81,7 @@ if __name__ == "__main__":
     ]
 
     header_per_file_reduced = [
-        "sum_intensity",
+        "intensity",
         "l_pep_ident",
         "l_prot_ident",
         "openms_fid",
@@ -84,7 +90,7 @@ if __name__ == "__main__":
     ]
 
     header_per_minimal = [
-        "sum_intensity",
+        "intensity",
         "openms_fid",
         "charge",
         "l_ms2_scans",
