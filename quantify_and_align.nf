@@ -196,7 +196,7 @@ process map_alignment_and_consensus_generation {
     SORTED_FEATURES=\$(echo ${features} | xargs -n1 | sort | xargs)
     NEW_FEATURES=()
     NEW_FEATURES_TRAFO=()
-    for file in \${SORTED_FEATURES{[@]}
+    for file in \${SORTED_FEATURES[@]}
     do
         NEW_FEATURES+=("\$(basename -- "\$file")_____aligned.featureXML")
         NEW_FEATURES_TRAFO+=("\$(basename -- "\$file")_____aligned.trafoXML")
