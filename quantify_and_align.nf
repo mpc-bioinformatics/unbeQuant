@@ -203,7 +203,7 @@ process map_alignment_and_consensus_generation {
     done
 
     # MapAlignerTreeGuided
-    \$(get_cur_bin_dir.sh)/openms/usr/bin/MapAlignerTreeGuided -in ${features} -out \${NEW_FEATURES[@]} -trafo_out \${NEW_FEATURES_TRAFO[@]}
+    \$(get_cur_bin_dir.sh)/openms/usr/bin/MapAlignerTreeGuided -in \${SORTED_FEATURES[@]} -out \${NEW_FEATURES[@]} -trafo_out \${NEW_FEATURES_TRAFO[@]}
 
     # Consensus Generation
     \$(get_cur_bin_dir.sh)/openms/usr/bin/FeatureLinkerUnlabeled -in \${NEW_FEATURES[@]} -out consensus_____${fdr}.consensusXML
