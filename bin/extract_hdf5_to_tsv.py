@@ -65,7 +65,7 @@ if __name__ == "__main__":
         # We itereate at results and other saved information in parallel
         if fm[fm_identifier] ==  prev_id:
             # We append to the last entry
-            tsv_rows[-1][1].append(np.trapezoid(h5["intensities"][idx], h5["retention_times"][idx])) # Using the trapezoid function to get the AUC for a trace (XIC of one isotope)
+            tsv_rows[-1][1].append(np.trapz(h5["intensities"][idx], h5["retention_times"][idx])) # Using the trapezoid function to get the AUC for a trace (XIC of one isotope)
             tsv_rows[-1][5].append(fm[fm_mz_start]) # Append mz_start
             tsv_rows[-1][6].append(fm[fm_mz_end]) # Append mz_end
             tsv_rows[-1][7].append(float(fm[fm_rt_start]) * 60) # Append rt_start
@@ -78,7 +78,7 @@ if __name__ == "__main__":
             # We generate a new entry:
             tsv_rows.append([
                 fm[fm_identifier], # openms_fid
-                [np.trapezoid(h5["intensities"][idx], h5["retention_times"][idx])], # Using the trapezoid function to get the AUC for a trace (XIC of one isotope)
+                [np.trapz(h5["intensities"][idx], h5["retention_times"][idx])], # Using the trapezoid function to get the AUC for a trace (XIC of one isotope)
                 fm[fm_charge], # charge
                 # These two are in lists in case that there are many (different) idents for a feature. (can be iterated via a zip-loop)
                 fm[fm_pep_idents], # pep_idents (if any)
