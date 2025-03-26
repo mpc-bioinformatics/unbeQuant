@@ -19,6 +19,8 @@ params.qal_mini = 1  // Minimum intensity for biosaur2 to consider a peak for fe
 params.qal_limit_num_of_parallel_feature_finders = Runtime.runtime.availableProcessors()  // Number of process used to convert (CAUTION: This can be very resource intensive!)
 params.qal_ppm_tolerance = 5  // PPM tolerance for the biosaur2 feature finder
 params.qal_minlh = 7  // Minimum number of MS1 scans to be considered for a feature. Check out biosaur2 documnentation to set the correct value
+params.qal_intensity_method = "top3_sum" // Method to calculate the intensity of the XICs. Only available options are "top3_sum", "top3_mean", "maximum" and "sum"
+
 // Include the XIC-Extractor for Bruker and Thermo
 PROJECT_DIR = workflow.projectDir
 include {retrieve_xics_from_raw_spectra} from PROJECT_DIR + '/include/xic-extractor/main.nf'
@@ -172,7 +174,7 @@ process extracted_xics_from_hdf5_to_tsv {
     tuple val(file_identifier), val(fdr), file("${hdf5.baseName}.tsv")
 
     """
-    extract_hdf5_to_tsv.py -hdf5_xic_file ${hdf5} -xic_query_file ${original_query_file} -out_tsv ${hdf5.baseName}.tsv
+    extract_hdf5_to_tsv.py -method ${params.qal_intensity_method} -hdf5_xic_file ${hdf5} -xic_query_file ${original_query_file} -out_tsv ${hdf5.baseName}.tsv
     """
 }
 
@@ -202,7 +204,7 @@ process map_alignment_and_consensus_generation {
     \$(get_cur_bin_dir.sh)/openms/usr/bin/MapAlignerTreeGuided -in ${features} -out \${NEW_FEATURES[@]} -trafo_out \${NEW_FEATURES_TRAFO[@]}
 
     # Consensus Generation
-    \$(get_cur_bin_dir.sh)/openms/usr/bin/FeatureLinkerUnlabeled -threads 8 -in \${NEW_FEATURES[@]} -out consensus_____${fdr}.consensusXML
+    \$(get_cur_bin_dir.sh)/openms/usr/bin/FeatureLinkerUnlabeled -in \${NEW_FEATURES[@]} -out consensus_____${fdr}.consensusXML
     """
 }
 

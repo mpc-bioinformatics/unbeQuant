@@ -27,12 +27,6 @@ def parse_args():
 if __name__ == "__main__":
     args = parse_args()
 
-    args.featurexmls_tsvs = ""
-    args.consensus = ""
-    args.out_tsv = "test.tsv"
-    args.out_tsv_reduced = "test_reduced.tsv"
-    args.out_tsv_minimal = "testminimal.tsv"
-
     dict_of_single_features = dict()
     dict_of_single_features_sanity_check = dict()
 
