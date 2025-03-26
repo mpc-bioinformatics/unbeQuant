@@ -193,7 +193,7 @@ process map_alignment_and_consensus_generation {
 
     """
     # Ensure same input order after rerunning by sorting the arguments
-    SORTED_FEATURES=$(echo ${features} | xargs -n1 | sort | xargs)
+    SORTED_FEATURES=\$(echo ${features} | xargs -n1 | sort | xargs)
     NEW_FEATURES=()
     NEW_FEATURES_TRAFO=()
     for file in \${SORTED_FEATURES{[@]}
