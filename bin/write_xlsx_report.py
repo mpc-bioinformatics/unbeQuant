@@ -35,7 +35,7 @@ if __name__ == "__main__":
 
         # Parse Logic, get the indices of the columns we are interested in. Yield None or empty list if the column is not found
         ceid_idx = RAW_header.index("openms_ceid")
-        intensity_idcs = [i for i, h in enumerate(RAW_header) if h.endswith("_____sum_intensity")]
+        intensity_idcs = [i for i, h in enumerate(RAW_header) if h.endswith("_____intensity")]
         pep_ident_idcs = [i for i, h in enumerate(RAW_header) if h.endswith("_____l_pep_ident")]
         prot_ident_idcs = [i for i, h in enumerate(RAW_header) if h.endswith("_____l_prot_ident")]
         charge_idcs = [i for i, h in enumerate(RAW_header) if h.endswith("_____charge")]
