@@ -12,6 +12,7 @@ def argparse_setup():
     parser = argparse.ArgumentParser()
     parser.add_argument("-tsv_file", help="The tsv-Identification file, containing the needed columns")
     parser.add_argument("-featureXML", help="The featureXML file, containing the user param about the MS2 scans")
+    parser.add_argument("-min_intensity", help="Minimum intensity a feature should have. CAUTION: This accounts for the previous set intensity calculation method which happens acroos all traces for a feature.", default=0)
     parser.add_argument("-use_protgraph", help="Flag to either include fasta_ids (not protgraph) or fasta_descs (protgraph)")
     parser.add_argument("-out_featurexml", help="The Output feature XML file with annotated identifications")
 
@@ -79,8 +80,10 @@ if __name__ == "__main__":
         f.setMetaValue("unbeQuant_MS2_Scan_Map", scans)
         ident_idcs.extend(idcs)
 
-        # Append feature to the output
-        ident_features.push_back(f)
+        # Append feature to the output, only if min_intensity is met
+        if f.getIntensity() >= float(args.min_intensity):
+            # We only add the feature if the intensity is above the threshold
+            ident_features.push_back(f)
 
     # Add unassigned identifications
     unassigned_idcs = set(range(len(psms))).difference(set(ident_idcs))
