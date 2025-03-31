@@ -20,6 +20,7 @@ params.qal_limit_num_of_parallel_feature_finders = Runtime.runtime.availableProc
 params.qal_ppm_tolerance = 5  // PPM tolerance for the biosaur2 feature finder
 params.qal_minlh = 7  // Minimum number of MS1 scans to be considered for a feature. Check out biosaur2 documnentation to set the correct value
 params.qal_intensity_method = "top3_sum" // Method to calculate the intensity of the XICs. Only available options are "top3_sum", "top3_mean", "maximum" and "sum"
+params.qal_minimum_intensity = 0 // Minimum intensity for the XICs to be considered for the quantification (this is the cutoff, which is applied after retrieving the intensity via the method described in qal_intensity_method)
 
 // Include the XIC-Extractor for Bruker and Thermo
 PROJECT_DIR = workflow.projectDir
@@ -143,7 +144,7 @@ process match_feature_with_idents {
     tuple val(file_identifier), val(fdr), file("${featurexml.baseName}_____${fdr}_____with_identifications.featureXML")
 
     """
-    map_features_with_idents.py -featureXML ${featurexml} -use_protgraph ${params.qal_protgraph_was_used} -tsv_file ${ident_tsv} -out_featurexml ${featurexml.baseName}_____${fdr}_____with_identifications.featureXML
+    map_features_with_idents.py -min_intensity ${params.qal_minimum_intensity} -featureXML ${featurexml} -use_protgraph ${params.qal_protgraph_was_used} -tsv_file ${ident_tsv} -out_featurexml ${featurexml.baseName}_____${fdr}_____with_identifications.featureXML
     """
 }
 
