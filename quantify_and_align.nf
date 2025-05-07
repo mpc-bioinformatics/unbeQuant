@@ -12,16 +12,14 @@ params.qal_outdir = "$PWD/results"  // Output-Directory of the quantification re
 params.qal_charge_low = 1  // Charges for the feature finder to use to extract features.
 params.qal_charge_high = 8 // See above
 params.qal_ppm_tolerance = 5 // Tolerance for the biosaur2 to use to map identifications on it, as well as to generate features
+params.qal_minlh = 7  // Minimum number of MS1 scans to be considered for a feature. Check out biosaur2 documnentation to set the correct value
 params.qal_additional_biosaur_parameters  = "" // Additional parameters for biosaur2
 params.qal_rt_enlarge_factor = 0.5  // Factor to enlarge the RT-window for matching MS2 with features
 params.qal_protgraph_was_used = false  // A Flag which is needed for the output to know which parsing mode and which column of "fasta_id" and "fasta_desc" needs to be taken
 params.qal_mini = 1  // Minimum intensity for biosaur2 to consider a peak for feature finding
 params.qal_limit_num_of_parallel_feature_finders = Runtime.runtime.availableProcessors()  // Number of process used to convert (CAUTION: This can be very resource intensive!)
-params.qal_ppm_tolerance = 5  // PPM tolerance for the biosaur2 feature finder
-params.qal_minlh = 7  // Minimum number of MS1 scans to be considered for a feature. Check out biosaur2 documnentation to set the correct value
 params.qal_intensity_method = "top3_sum" // Method to calculate the intensity of the XICs. Only available options are "top3_sum", "top3_mean", "maximum" and "sum"
 params.qal_cutoff = "t0" // Minimum intensity for the XICs to be considered for the quantification (this is the cutoff, which is applied after retrieving the intensity via the method described in qal_intensity_method) Use tX or qX to set the cutoff (see Python script for more details). Default to no intensity cutoff (or cutoff at intensity smalle or equal to 0)
-out_plot_cutoff
 
 
 
