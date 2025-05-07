@@ -20,7 +20,10 @@ params.qal_limit_num_of_parallel_feature_finders = Runtime.runtime.availableProc
 params.qal_ppm_tolerance = 5  // PPM tolerance for the biosaur2 feature finder
 params.qal_minlh = 7  // Minimum number of MS1 scans to be considered for a feature. Check out biosaur2 documnentation to set the correct value
 params.qal_intensity_method = "top3_sum" // Method to calculate the intensity of the XICs. Only available options are "top3_sum", "top3_mean", "maximum" and "sum"
-params.qal_minimum_intensity = 0 // Minimum intensity for the XICs to be considered for the quantification (this is the cutoff, which is applied after retrieving the intensity via the method described in qal_intensity_method)
+params.qal_cutoff = "t0" // Minimum intensity for the XICs to be considered for the quantification (this is the cutoff, which is applied after retrieving the intensity via the method described in qal_intensity_method) Use tX or qX to set the cutoff (see Python script for more details). Default to no intensity cutoff (or cutoff at intensity smalle or equal to 0)
+out_plot_cutoff
+
+
 
 // Include the XIC-Extractor for Bruker and Thermo
 PROJECT_DIR = workflow.projectDir
@@ -76,7 +79,7 @@ workflow quantify_and_align {
         // Get all the single fdrs
         in_spectra_files_tuple = in_identifications_tuple.map { it -> it[1] } .unique().combine(spectra_files_tuple).map { it -> tuple(it[1], it[0], it[2]) }
         // Match with identifications using file_identifier (it[0]) and fdr (it[1])
-        matched_ident_features_with_raws = match_feature_with_idents.out.join(in_spectra_files_tuple, by: [0,1])
+        matched_ident_features_with_raws = match_feature_with_idents.out[ß].join(in_spectra_files_tuple, by: [0,1])
         
         //// Retrieve XICs in hdf5 format
         // First, generate queries
@@ -94,7 +97,7 @@ workflow quantify_and_align {
         )
 
         //// Apply the MapAligner and Consensus_generator
-        identified_features_by_fdr = match_feature_with_idents.out.map { it -> tuple(it[1], it[2]) }.groupTuple()
+        identified_features_by_fdr = match_feature_with_idents.out[0].map { it -> tuple(it[1], it[2]) }.groupTuple()
         map_alignment_and_consensus_generation(identified_features_by_fdr)
 
 
@@ -109,7 +112,7 @@ workflow quantify_and_align {
     emit:
         generate_feature_ident_intesity_table.out[0]
         consensus_with_feature_tsvs
-        match_feature_with_idents
+        match_feature_with_idents.out[0]
 }
 
 
@@ -135,16 +138,18 @@ process create_feature_xml {
 
 process match_feature_with_idents {
     container "luxii/unbequant:latest"
-    publishDir "${params.qal_outdir}/features_with_annotated_identifications", mode:'copy'
+    publishDir "${params.qal_outdir}/features_with_annotated_identifications", mode:'copy', pattern:'*____with_identifications.featureXML'
+    publishDir "${params.qal_outdir}/features_with_annotated_identifications/cutoff_plots", mode:'copy', pattern:'*____cutoff_plot.html'
 
     input:
     tuple val(file_identifier), val(fdr), file(ident_tsv), file(featurexml)
 
     output:
     tuple val(file_identifier), val(fdr), file("${featurexml.baseName}_____${fdr}_____with_identifications.featureXML")
+    file("${featurexml.baseName}_____cutoff_plot.html")
 
     """
-    map_features_with_idents.py -min_intensity ${params.qal_minimum_intensity} -featureXML ${featurexml} -use_protgraph ${params.qal_protgraph_was_used} -tsv_file ${ident_tsv} -out_featurexml ${featurexml.baseName}_____${fdr}_____with_identifications.featureXML
+    map_features_with_idents.py -cutoff ${params.qal_cutoff} -featureXML ${featurexml} -use_protgraph ${params.qal_protgraph_was_used} -tsv_file ${ident_tsv} -out_featurexml ${featurexml.baseName}_____${fdr}_____with_identifications.featureXML -out_plot_cutoff ${featurexml.baseName}_____cutoff_plot.html
     """
 }
 
