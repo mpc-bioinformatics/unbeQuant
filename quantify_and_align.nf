@@ -77,7 +77,7 @@ workflow quantify_and_align {
         // Get all the single fdrs
         in_spectra_files_tuple = in_identifications_tuple.map { it -> it[1] } .unique().combine(spectra_files_tuple).map { it -> tuple(it[1], it[0], it[2]) }
         // Match with identifications using file_identifier (it[0]) and fdr (it[1])
-        matched_ident_features_with_raws = match_feature_with_idents.out[ß].join(in_spectra_files_tuple, by: [0,1])
+        matched_ident_features_with_raws = match_feature_with_idents.out[0].join(in_spectra_files_tuple, by: [0,1])
         
         //// Retrieve XICs in hdf5 format
         // First, generate queries
