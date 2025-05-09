@@ -2,6 +2,7 @@
 
 import argparse
 import os
+import csv
 
 from ast import literal_eval
 import plotly.graph_objects as go
