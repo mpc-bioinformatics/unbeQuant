@@ -283,3 +283,18 @@ process generate_xlsx_reports_from_tables {
     """
 }
 
+process generate_plots_from_tables {
+    publishDir "${params.qal_outdir}/statistics___${fdr}/plots", mode:'copy'
+    container "luxii/unbequant:latest"
+
+    input:
+    tuple val(fdr), file(full_file), file(reduced_file), file(minimal_file)
+
+    output:
+    file("*.html")
+
+    """
+    PYTHONUNBUFFERED=1 visualize_consensus_features_infos.py -tsv_file ${full_file}
+    """
+}
+
