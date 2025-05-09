@@ -15,7 +15,7 @@ def argparse_setup():
 
     return parser.parse_args()
 
-with __name__ == "__main__":
+if __name__ == "__main__":
     # Parse Arguments
     args = argparse_setup()
 
