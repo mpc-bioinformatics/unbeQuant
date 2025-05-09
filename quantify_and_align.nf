@@ -106,6 +106,7 @@ workflow quantify_and_align {
 
         generate_feature_ident_intesity_table(consensus_with_feature_tsvs)
         generate_xlsx_reports_from_tables(generate_feature_ident_intesity_table.out)
+        generate_plots_from_tables(generate_feature_ident_intesity_table.out)
 
     emit:
         generate_feature_ident_intesity_table.out[0]
