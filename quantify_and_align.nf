@@ -18,7 +18,7 @@ params.qal_rt_enlarge_factor = 0.5  // Factor to enlarge the RT-window for match
 params.qal_protgraph_was_used = false  // A Flag which is needed for the output to know which parsing mode and which column of "fasta_id" and "fasta_desc" needs to be taken
 params.qal_mini = 1  // Minimum intensity for biosaur2 to consider a peak for feature finding
 params.qal_limit_num_of_parallel_feature_finders = Runtime.runtime.availableProcessors()  // Number of process used to convert (CAUTION: This can be very resource intensive!)
-params.qal_intensity_method = "top3_sum" // Method to calculate the intensity of the XICs. Only available options are "top3_sum", "top3_mean", "maximum" and "sum"
+params.qal_intensity_method = "sum" // Method to calculate the intensity of the XICs. Only available options are "top3_sum", "top3_mean", "maximum" and "sum"
 params.qal_cutoff = "t0" // Minimum intensity for the XICs to be considered for the quantification (this is the cutoff, which is applied after retrieving the intensity via the method described in qal_intensity_method) Use tX or qX to set the cutoff (see Python script for more details). Default to no intensity cutoff (or cutoff at intensity smalle or equal to 0)
 
 
