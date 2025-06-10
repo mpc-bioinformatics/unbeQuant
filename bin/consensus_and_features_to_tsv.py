@@ -1,15 +1,12 @@
 #!/bin/env python
 
-import sys
 import argparse
 import os
 import csv
-import json
-import subprocess
-import pandas as pd
 from ast import literal_eval
-import tqdm
 
+import tqdm
+import pandas as pd
 import pyopenms
 
 
@@ -25,11 +22,13 @@ def parse_args():
 
 
 if __name__ == "__main__":
+    # Loads the consensus file and all the feature tsv files.
+    # This file then generates the final report tsv files (full, reduced and minimal)
     args = parse_args()
 
+    # Loading all feature tsv files
     dict_of_single_features = dict()
     dict_of_single_features_sanity_check = dict()
-
     for ftsv in args.featurexmls_tsvs.split(","):
         filename = ".".join(ftsv.split(os.sep)[-1].split(".")[:-1])
         print("Loading features of file: {}".format(filename))
@@ -48,7 +47,7 @@ if __name__ == "__main__":
         )
         dict_of_single_features_sanity_check[filename] = [False]*len(dict_of_single_features[filename])
 
-    # First Conensus Map (for each consensus we will do a row)
+    # First Conensus Map (for each consensus we will write a row in the final report)
     print("Loading consensus...")
     cmap = pyopenms.ConsensusMap()
     pyopenms.ConsensusXMLFile().load(args.consensus, cmap)
@@ -58,7 +57,7 @@ if __name__ == "__main__":
     for key,val in map_list.items():
         map_list[key] = ".".join(val.filename.split(".")[:-1])
 
-    # Set header order
+    # Set header order for  full, reduced and minimal (and all) output
     header_per_file = [
         "intensity",
         "l_pep_ident",
@@ -142,7 +141,7 @@ if __name__ == "__main__":
         out_csv_minimal.writerow(row_header)
 
         print("Writing consensus table")
-        # Now get data
+        # Now get the actual data
         for ce in tqdm.tqdm(cmap, total=len([None for _ in cmap]), unit="consensus_element(s)"):
             entry = ["e_" + str(ce.getUniqueId())]
             entry_reduced = ["e_" + str(ce.getUniqueId())]
@@ -152,7 +151,7 @@ if __name__ == "__main__":
             files_involved = [map_list[fl.getMapIndex()] for fl in feature_list]
             feature_in_files_involved = [fl.getUniqueId() for fl in feature_list]
 
-            # PreLoad rows
+            # Preload rows
             file_rows = []
             for fi, fi_fid in zip(files_involved, feature_in_files_involved):
                 filter_row = dict_of_single_features[fi]["openms_fid"] == "f_" + str(fi_fid)
@@ -191,7 +190,7 @@ if __name__ == "__main__":
                 min(g_mzs), max(g_mze), min(g_rts), max(g_rte)
             ]
 
-            # Now Add entry informatino
+            # Now Add entry information and write to the tsv files
             for h in header_per_file:
                 for f in filenames:
                     if f in files_involved:  # If data, append it

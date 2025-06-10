@@ -19,7 +19,7 @@ params.sir_outdir =  "${params.main_outdir}/statistics"
 params.qal_outdir =  "${params.main_outdir}/quantifications"
 params.outdir =      "${params.main_outdir}/extraced_xics"
 
-// Set Parameters, since we use a ms2-specific-FASTA (across a whole dataset) generated with ProtGraph
+// Set Parameters, since we use a FASTA generated with ProtGraph (ms2-precursor specific FASTA, a specifically tailored FASTA for the dataset).
 params.cmf_one_fasta = true
 params.sir_identification_from_protgraph = true
 params.sir_remove_variable_modifications = true

@@ -1,16 +1,13 @@
 #!/bin/env python
 
-import sys
-import csv
 import os
-import matplotlib
-import pyopenms
 import argparse
 import math
 
+import pyopenms
+import pandas as pd
 import plotly
 import plotly.express as ex
-import pandas as pd
 from plotly.subplots import make_subplots
 import plotly.graph_objects as go
 
@@ -20,7 +17,6 @@ def parse_args():
     parser.add_argument("-trafo_xmls", help="The trafo_xmls, seperated by a ',' which should be plotted ")
     parser.add_argument("-out_file_postfix", help="Postfix for the file_output", default="")
     return parser.parse_args()
-
 
 if __name__ == "__main__":
     # Parse Arguments
@@ -32,7 +28,7 @@ if __name__ == "__main__":
         trdesc = pyopenms.TransformationDescription()
         pyopenms.TransformationXMLFile().load(trafo, trdesc, False)
 
-        # Save Information
+        # Save Information in an easier format
         data_points = [(x.first, x.second) for x in trdesc.getDataPoints()]
         trafo_info[os.path.basename(trafo).split("_____", 1)[0]] = (
             [x[0] for x in data_points], # From RT

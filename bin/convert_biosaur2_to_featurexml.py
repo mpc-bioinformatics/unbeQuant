@@ -1,14 +1,17 @@
 #!/bin/env python
 
-
 import argparse
-import numpy as np
-import pyopenms
 import os 
-import pandas as pd
 import json
-import tqdm
 from ast import literal_eval
+
+import tqdm
+import pyopenms
+import numpy as np
+import pandas as pd
+
+
+
 
 
 def parse_args():
@@ -23,6 +26,7 @@ def parse_args():
 
 
 if __name__ == "__main__":
+    # Convert biosaur2 features and hills to the OpenMS featureXML format (with additional annotations)
     args = parse_args()
 
     # Read all features, but only necessary columns via pandas
@@ -56,8 +60,7 @@ if __name__ == "__main__":
         feat_d["isotopes"] = isos
         all_features.append(feat_d)
 
-    ### Read mzML file  (but only we only retrieve the MS2 scans, specifically the m/z, charge, RT and scan number)
-    ### and save it in the dataframe
+    ### Read mzML file  (but we only retrieve the MS2 scans, specifically the m/z, charge, RT and scan number) and save it in the dataframe
     print("Loading MS2 scans")
     exp = pyopenms.MSExperiment()
     pyopenms.MzMLFile().load(args.mzml, exp)
@@ -66,18 +69,14 @@ if __name__ == "__main__":
     ms2_cs = []
     ms2_scans = []
     for spec in tqdm.tqdm(exp.getSpectra()):
-
         if spec.getMSLevel() == 2:
             p = spec.getPrecursors()[0]
             ms2_cs.append(p.getCharge())
             ms2_mzs.append(p.getMZ())
             ms2_scans.append(int(spec.getNativeID()[spec.getNativeID().index("scan")+5:].split(" ", 1)[0]))  # Get Scan "scan=XXXX" from the native ID information
             ms2_rts.append(spec.getRT())  # In Seconds!!!
-
     ms2_df = pd.DataFrame.from_dict(dict(rt=ms2_rts, mz=ms2_mzs, charge=ms2_cs, scan=ms2_scans))
-    ms2_df["mz_tol"] = (ms2_df["mz"]/1000000)*args.mz_tolerance
-
-
+    ms2_df["mz_tol"] = (ms2_df["mz"]/1000000)*args.mz_tolerance  # Add mz_tolerance to it (in ppm)
 
     # Write features in featureXML
     print("Generating PyOpenMS Features")
@@ -93,7 +92,7 @@ if __name__ == "__main__":
         f.setMZ(np.median(literal_eval(iso0["hills_mz_array"])))
         f.setRT(f_d["rtApex"]*60)
 
-        # Create convex hull for each isotope
+        # Create convex hull for each isotope (here we use a rectangle)
         chulls = []
         for iso in f_d["isotopes"]:
             hull = pyopenms.ConvexHull2D()
@@ -116,7 +115,7 @@ if __name__ == "__main__":
         features.push_back(f)
 
 
-    ### Post processing, afterwards we match alls the ms2 spectra with the features and add it as a CV param
+    ### Post processing, afterwards we match all the ms2 spectra with the features and add it as a CV param
     print("Matching MS2 to Features")
     ms2_matching_to_feature = []
     for f in tqdm.tqdm(features, total=features.size()):
@@ -158,6 +157,5 @@ if __name__ == "__main__":
     for ms2s, f  in zip(ms2_matching_to_feature, features):
         f.setMetaValue("unbeQuant_MS2_Scan_Map", ms2s)
         final_features.push_back(f)
-
     fh = pyopenms.FeatureXMLFile()
     fh.store(args.output_featurexml, final_features)

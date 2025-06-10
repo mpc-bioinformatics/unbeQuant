@@ -1,14 +1,11 @@
 #!/bin/env python
 
-import sys
 import argparse
-import os
 import csv
-import json
-import subprocess
-import numpy as np
 
+import numpy as np
 import h5py
+
 
 def intensity_calculation(method: str, intensities: list):
     if method == "maximum":
@@ -22,7 +19,6 @@ def intensity_calculation(method: str, intensities: list):
     else:
         raise ValueError("Unknown method: " + method)
 
-
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("-hdf5_xic_file", help="Input-hdf5 file")
@@ -32,8 +28,8 @@ def parse_args():
 
     return parser.parse_args()
 
-
 if __name__ == "__main__":
+    # Convert the hdf5 file to a tsv file while including additional information (provided in the query file)
     args = parse_args()
 
     # Read feature mapping (query file)
@@ -48,6 +44,7 @@ if __name__ == "__main__":
     # Open hdf5 file
     h5 = h5py.File(args.hdf5_xic_file, "r")
 
+    # Get the indices of the feature mapping headers
     fm_identifier = feature_mapping_headers.index("identifier")
     fm_charge = feature_mapping_headers.index("charge")
     fm_pep_idents = feature_mapping_headers.index("pep_idents")
@@ -94,7 +91,7 @@ if __name__ == "__main__":
                 fm[fm_ms2_scans] # ms2_scans
             ])   
 
-    # Post-Processing. Which method do we want to use to report the intensity?
+    # Post-Processing. Using the user selected method to get the quantitative ("intensity") value of a XICs AUC (for each isotope)
     for f in tsv_rows:
         f[1] = intensity_calculation(args.method, f[1])
 

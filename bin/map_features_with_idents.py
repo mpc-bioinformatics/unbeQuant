@@ -1,6 +1,5 @@
 #!/bin/env python
 
-import sys
 import argparse
 import os
 
@@ -14,15 +13,16 @@ def argparse_setup():
     parser = argparse.ArgumentParser()
     parser.add_argument("-tsv_file", help="The tsv-Identification file, containing the needed columns")
     parser.add_argument("-featureXML", help="The featureXML file, containing the user param about the MS2 scans")
-    parser.add_argument("-cutoff", help="Cutoff value used to remove low abundant features. CAUTION: This accounts for the previous set intensity calculation method which happens acroos all traces for a feature., Use 'iX' to remove all features with intensity <= X. Alternatively you can use 'qX' to remove the lowest X percent of intensities. E.G.: 't1000' or 'q0.05'.", default="t0")
+    parser.add_argument("-cutoff", help="Cutoff value used to remove low abundant features. CAUTION: This accounts for the previous set intensity calculation method which happens acroos all traces for a feature., Use 'tX' to remove all features with intensity <= X. Alternatively you can use 'qX' to remove the lowest X percent of intensities. E.G.: 't1000' or 'q0.05'.", default="t0")
     parser.add_argument("-use_protgraph", help="Flag to either include fasta_ids (not protgraph) or fasta_descs (protgraph)")
     parser.add_argument("-out_featurexml", help="The Output feature XML file with annotated identifications")
     parser.add_argument("-out_plot_cutoff", help="The Output directory for the plotsfeature XML file with annotated identifications", default="feature_cutoff_plot.html")
 
     return parser.parse_args()
 
-
 if __name__ == "__main__":
+    # Map feature with identifications (and remove features, corresponding to the cutoff)
+    # the features are mapped with their corresponding identification, using the already added MS2 scan information in previous a step
     args = argparse_setup()
 
     if args.use_protgraph == "true":
@@ -46,7 +46,6 @@ if __name__ == "__main__":
         peptide_id.setMZ(psm['exp_mass_to_charge'])
         peptide_id.setScoreType('q-value')
         peptide_id.setHigherScoreBetter(False) # This was the suggested change from the comment
-        # peptide_id.setIdentifier(psm['spectra_ref'])
         peptide_id.setIdentifier(run_name)
         peptide_id.setMetaValue("proteins", psm[column_ident])
         peptide_hit = pyopenms.PeptideHit()
@@ -111,4 +110,6 @@ if __name__ == "__main__":
     # Add unassigned identifications
     unassigned_idcs = set(range(len(psms))).difference(set(ident_idcs))
     ident_features.setUnassignedPeptideIdentifications([peptide_ids[idx] for idx in unassigned_idcs])
+
+    # Save final feature XML file with identifications
     ident_fh.store(args.out_featurexml, ident_features)

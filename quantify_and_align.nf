@@ -2,31 +2,27 @@
 nextflow.enable.dsl=2
 
 // Required Parameters
-params.qal_spectra_files = "$PWD/raws"  // .RAW/.d-files
-params.qal_mzmls = "$PWD/mzmls"  // mzML-files
-params.qal_idents = "$PWD/raws/tsvs"  // Folder containing Identifications in TSV-format
-params.qal_idents_blob_filter = "*qvalue_no_decoys_fdr_0.0[15].tsv"  // Should be TSV-files of Identification (already FDR-filtered), containing the columns: "charge", "plain_peptide", "used_score", "retention_time", "exp_mass_to_charge", "fasta_id", "fasta_desc"
-params.qal_outdir = "$PWD/results"  // Output-Directory of the quantification results (splitted by the fdr)
+params.qal_spectra_files = "$PWD/raws"  // .RAW/.d-files from which the XICS are extracted.
+params.qal_mzmls = "$PWD/mzmls"  // Input mzML-files, which are used to generate the features. NOTE: They need to be named like the raw files, but with the .mzML extension (e.g. "sample1.raw" -> "sample1.mzML").
+params.qal_idents = "$PWD/raws/tsvs"  // Folder containing Identifications in TSV-format. Default: They need to be called with the suffix: "*qvalue_no_decoys_fdr_0.0[15].tsv". Change the parameter below, if they are called differently. The columns: containing the columns: "charge", "plain_peptide", "used_score", "retention_time", "exp_mass_to_charge", "fasta_id", "fasta_desc" need to be present.
+params.qal_idents_blob_filter = "*qvalue_no_decoys_fdr_0.0[15].tsv"  // Blob filter for the "params.qal_idents" folder (identification files). NOTE: "fdr_0.0[15]" needs to be present in the file name, since this workflow uses this to return fdr-specific results.
+params.qal_outdir = "$PWD/results"  // Output-Directory of the quantification results (splitted by the fdr thresholds).
 
 // Optional Parameters
-params.qal_charge_low = 1  // Charges for the feature finder to use to extract features.
-params.qal_charge_high = 8 // See above
-params.qal_ppm_tolerance = 5 // Tolerance for the biosaur2 to use to map identifications on it, as well as to generate features
-params.qal_minlh = 7  // Minimum number of MS1 scans to be considered for a feature. Check out biosaur2 documnentation to set the correct value
-params.qal_additional_biosaur_parameters  = "" // Additional parameters for biosaur2
-params.qal_rt_enlarge_factor = 0.5  // Factor to enlarge the RT-window for matching MS2 with features
-params.qal_protgraph_was_used = false  // A Flag which is needed for the output to know which parsing mode and which column of "fasta_id" and "fasta_desc" needs to be taken
-params.qal_mini = 1  // Minimum intensity for biosaur2 to consider a peak for feature finding
-params.qal_limit_num_of_parallel_feature_finders = Runtime.runtime.availableProcessors()  // Number of process used to convert (CAUTION: This can be very resource intensive!)
-params.qal_intensity_method = "sum" // Method to calculate the intensity of the XICs. Only available options are "top3_sum", "top3_mean", "maximum" and "sum"
-params.qal_cutoff = "t0" // Minimum intensity for the XICs to be considered for the quantification (this is the cutoff, which is applied after retrieving the intensity via the method described in qal_intensity_method) Use tX or qX to set the cutoff (see Python script for more details). Default to no intensity cutoff (or cutoff at intensity smalle or equal to 0)
-
-
+params.qal_charge_low = 1  // Minimum charge of a feature to be considered (biosaur2 -cmin parameter)
+params.qal_charge_high = 8  // Maximum charge of a feature to be considered (biosaur2 -cmax parameter)
+params.qal_ppm_tolerance = 5  // Tolerance for the biosaur2 to use to map identifications on it, as well as to generate features (biosaur2 -htol and -itol parameters). The ppm tolerance should be set to the same value as it has been used for the search engine for identification of MS2 spectra.
+params.qal_minlh = 7  // Minimum number of MS1 scans to be considered for a feature. Check out biosaur2 documnentation to set the correct value. (biosaur2 -minlh parameter)
+params.qal_additional_biosaur_parameters  = ""  // Additional parameters for biosaur2. Check out the biosaur2 documentation if you want to set something specific.
+params.qal_mini = 1  // Minimum intensity for biosaur2 to consider a peak for feature finding. (biosaur2 -mini parameter).
+params.qal_rt_enlarge_factor = 0.5  // A factor value to enlarge the RT-window for matching MS2 with features. This factor allow to match MS2 spectra to features, allowing a RT-error to the boundaries of a feature. Formula which enlarges the feature in the RT-dimension: "(MaxRT-MinRT)*enlarge_factor".
+params.qal_protgraph_was_used = false  // A Flag which is needed for the output to know which parsing mode and which column of "fasta_id" and "fasta_desc" needs to be taken. If you searched prior with ProtGraph, set this to true. 
+params.qal_intensity_method = "sum"  // Method to calculate the quantitative value of the individual XICs. Only available options are "top3_sum", "top3_mean", "maximum" and "sum".. See the python script for more details.
+params.qal_cutoff = "t0"  // Minimum quantitative value of the XICs to be considered for the quantification (this is the cutoff, which is applied after retrieving the intensity via the method described in qal_intensity_method) Use tX or qX to set the cutoff (see Python script for more details). Default to no intensity cutoff (or cutoff at intensity smalle or equal to 0).
 
 // Include the XIC-Extractor for Bruker and Thermo
 PROJECT_DIR = workflow.projectDir
 include {retrieve_xics_from_raw_spectra} from PROJECT_DIR + '/include/xic-extractor/main.nf'
-
 
 // Standalone MAIN Workflow
 workflow {
@@ -35,12 +31,14 @@ workflow {
     spectra_files = raw_files.concat(d_files)
     mzmls = Channel.fromPath(params.qal_mzmls + "/*.mzML")
     identifications = Channel.fromPath(params.qal_idents + "/" + params.qal_idents_blob_filter)
+    // Mapping and grouping identifications with fdrs
     identifications_tuple = identifications
         .map { file -> tuple(
             file.baseName.substring(file.baseName.indexOf("fdr_") + 4, file.baseName.indexOf("fdr_") + 8), 
             file
         ) }.groupTuple()
 
+    // Execute workflow
     quantify_and_align(
         spectra_files,
         mzmls,
@@ -61,62 +59,68 @@ workflow quantify_and_align {
         // Create featureXML from mzML
         create_feature_xml(mzmls)
 
-        //// Generate file_identifier and match features with identifications (on multiple fdrs)
+        // Generate file_identifier and match features with identifications (on multiple fdrs)
         spectra_files_tuple = spectra_files.map { file -> tuple(file.baseName, file) }
         featurexmls_tuple = create_feature_xml.out.map { file -> tuple(file.baseName, file) }
+        
         // Get all the single fdrs
         in_identifications_tuple = identifications_tuple.transpose().map { it -> tuple(it[1].baseName.split("_____")[0], it[0], it[1]) }
+        
         // Match with identifications using file_identifier (it[0]) and fdr (it[1])
         in_featurexmls_tuple = in_identifications_tuple.map { it -> it[1] } .unique().combine(featurexmls_tuple).map { it -> tuple(it[1], it[0], it[2]) }
         matched_features_with_idents_tuple = in_identifications_tuple.join(in_featurexmls_tuple, by: [0,1])
         mzmls_tuple = mzmls.map { file -> tuple(file.baseName, file) }
-        // Do the actual matching
+        
+        // Do the actual matching between features and identifications
         match_feature_with_idents(matched_features_with_idents_tuple)
 
-        //// Retrieve the quant absolute values via the XIC Extraction
         // Get all the single fdrs
         in_spectra_files_tuple = in_identifications_tuple.map { it -> it[1] } .unique().combine(spectra_files_tuple).map { it -> tuple(it[1], it[0], it[2]) }
+        
         // Match with identifications using file_identifier (it[0]) and fdr (it[1])
         matched_ident_features_with_raws = match_feature_with_idents.out[0].join(in_spectra_files_tuple, by: [0,1])
-        
-        //// Retrieve XICs in hdf5 format
-        // First, generate queries
+
+        // Generate queries for XIC-Extraction from .raw and .d files 
         generate_queries_from_featurexmls(matched_ident_features_with_raws)
-        // Then, extract via xic_extractor
+        
+        // Do the actual XIC Retrieval.
         extract_xics_channel = generate_queries_from_featurexmls.out.map {
             it -> tuple(it[4], it[2])
         }
         retrieve_xics_from_raw_spectra(extract_xics_channel)
-        // Finally generate the resulting tsv file containing all the data
+        
+        // Convert the hdf5 extracted XICs to tsv and add there the additional information from the featureXMLs.
         xics_and_remaining_data = retrieve_xics_from_raw_spectra.out.join(generate_queries_from_featurexmls.out, by: [0])
-
         extracted_xics_from_hdf5_to_tsv(
             xics_and_remaining_data.map {it -> tuple(it[0], it[2], it[1], it[3]) }
         )
 
-        //// Apply the MapAligner and Consensus_generator
+        // Apply map alignment and consensus generation (OpenMS) on the generated (and with MS2 and identification annotated) features.
         identified_features_by_fdr = match_feature_with_idents.out[0].map { it -> tuple(it[1], it[2]) }.groupTuple()
         map_alignment_and_consensus_generation(identified_features_by_fdr)
 
-
-        //// Generate the final statistics and visualizations
+        // Preperation to generate the final output tables and visualizations.
         fdr_and_feature_tsvs = extracted_xics_from_hdf5_to_tsv.out.map { it -> tuple(it[1], it[2]) }.groupTuple()
         consensus_with_feature_tsvs = map_alignment_and_consensus_generation.out[0].join(fdr_and_feature_tsvs, by: 0)
+        
+        // RT transformations of each input file
         visualize_RT_transoformations(map_alignment_and_consensus_generation.out[1])
 
+        // Final output table (in tsv and xlsx format) containing all "consensus features".
         generate_feature_ident_intesity_table(consensus_with_feature_tsvs)
         generate_xlsx_reports_from_tables(generate_feature_ident_intesity_table.out)
+        
+        // Further plots (currently only missingness count per input file)
         generate_plots_from_tables(generate_feature_ident_intesity_table.out)
 
     emit:
-        generate_feature_ident_intesity_table.out[0]
-        consensus_with_feature_tsvs
-        match_feature_with_idents.out[0]
+        generate_feature_ident_intesity_table.out[0]  // A tuple containing: [FDR, raw_quantification_full, raw_quantification_reduced, raw_quantification_minimal]
+        consensus_with_feature_tsvs  // Consensus with features: [FDR, [consensusXML, [file1_features.tsv, file2_features.tsv, ...]]]
+        match_feature_with_idents.out[0]  // [FDR, [file1.featureXML, file2.featureXML, ...]]  (Features with identifications and MS2 annotated)
 }
 
 
 process create_feature_xml {
-    maxForks params.qal_limit_num_of_parallel_feature_finders
     stageInMode "copy"
     container "luxii/unbequant:latest"
     memory "18G"
@@ -285,7 +289,7 @@ process generate_xlsx_reports_from_tables {
 }
 
 process generate_plots_from_tables {
-    publishDir "${params.qal_outdir}/statistics___${fdr}/plots", mode:'copy'
+    publishDir "${params.qal_outdir}/final_reports___${fdr}/plots", mode:'copy'
     container "luxii/unbequant:latest"
 
     input:

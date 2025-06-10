@@ -18,7 +18,7 @@ params.sir_outdir =  "${params.main_outdir}/identifications_summarized"
 params.qal_outdir =  "${params.main_outdir}/quantifications"
 params.outdir =      "${params.main_outdir}/extraced_xics"
 
-// Set Parameters, since we use a FASTA generated not with ProtGraph
+// Set Parameters, since we use a FASTA (from UniProt most probably) which was not generated with ProtGraph
 params.sir_identification_from_protgraph = false
 params.sir_remove_variable_modifications = true
 params.sir_count_same_protein_as_unique = true
