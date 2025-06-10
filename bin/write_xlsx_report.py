@@ -1,8 +1,9 @@
 #!/bin/env python
 
-import xlsxwriter
 import argparse
 import csv
+
+import xlsxwriter
 import tqdm
 
 def parse_args():
@@ -19,9 +20,9 @@ def merge_cells(y1, y2, header, workbook, worksheet):
     else:
         worksheet.merge_range(0, y1, 0, y2, header, merge_format)
 
-
-
 if __name__ == "__main__":
+    # Take the raw tsv file and convert it to an xlsx file. 
+    # CAUTION: XLSX has a row limit as well as a limit of characters per cell. Therefore some cells may be truncated or rows could miss completely.
     args = parse_args()
 
     # Get number of lines
@@ -56,7 +57,6 @@ if __name__ == "__main__":
         xic_intenst_idcs = [i for i, h in enumerate(RAW_header) if h.endswith("_____l_intensities")]
         xic_rt_idcs = [i for i, h in enumerate(RAW_header) if h.endswith("_____l_retention_times")]
 
-
         final_output_list = [
             (ceid_idx, "Identifier", 128, False),
             (intensity_idcs, "Intensities", 96, True),
@@ -81,7 +81,7 @@ if __name__ == "__main__":
             (xic_rt_idcs, "XICs_retention_times", None, True),
         ]
 
-        # Create workbook and set the toplevel header with merged cells
+        # Create workbook and set the top level header with merged cells
         workbook = xlsxwriter.Workbook(args.output)
         workbook.use_zip64()
         worksheet = workbook.add_worksheet()
@@ -100,7 +100,6 @@ if __name__ == "__main__":
                     continue
                 merge_cells(offset, offset+len(idcs)-1, header, workbook, worksheet)
                 offset += len(idcs)
-                
 
         # Write column headers:
         offset = 0
@@ -127,7 +126,6 @@ if __name__ == "__main__":
                     if width is not None:
                         worksheet.set_column_pixels(offset + offoff, offset + offoff, width)
                 offset += len(idcs)
-
 
         data_last_format = workbook.add_format({"right": 2})
         row_offset = 2

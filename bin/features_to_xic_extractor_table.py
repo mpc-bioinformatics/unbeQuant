@@ -1,11 +1,7 @@
 #!/bin/env python
 
-import sys
 import argparse
-import os
 import csv
-import json
-import subprocess
 
 import pyopenms
 
@@ -17,22 +13,20 @@ def parse_args():
 
     return parser.parse_args()
 
-
 if __name__ == "__main__":
+    # Preparing the xic-extractor query file from a featureXML file
     args = parse_args()
 
     # First load features
     fmap = pyopenms.FeatureMap()
     pyopenms.FeatureXMLFile().load(args.featurexml, fmap)
     
-
     # Create Feature-Queries for xic extraction
     queries = []
     features_mapping = []
 
+    # For each feature
     for feature in fmap:
-        # For each feature
-
         scans = feature.getMetaValue("unbeQuant_MS2_Scan_Map")
 
         pep_idents = []
@@ -48,7 +42,7 @@ if __name__ == "__main__":
                 pep_idents.append(seq)
                 prot_idents.append(prots)
 
-        # Prepare query for TRFP and collect other information from the feature
+        # Prepare query for XIC-Extractor and collect other information from the feature (isotope wise)
         for hull in feature.getConvexHulls():
             # Query for each isotope
             bb = hull.getBoundingBox()
@@ -62,7 +56,7 @@ if __name__ == "__main__":
             d["rt_end"] = rt_end / 60 # in minutes
             queries.append(d)
 
-            # TODO Identification is missing
+            # Append the feature mapping with all the information for a single query (for a single isotope)
             features_mapping.append(("f_" + str(feature.getUniqueId()), mz_start, mz_end, rt_start, rt_end, feature.getCharge(), pep_idents, prot_idents, scans))
 
 
@@ -72,7 +66,7 @@ if __name__ == "__main__":
 
         csv_out.writerow([
             "identifier", "mz_start", "mz_end", "rt_start", "rt_end", "mz", "ppm", "ms_level", ## Needed for the xic_extractor
-            "charge", "pep_idents", "prot_idents", "ms2_scans"
+            "charge", "pep_idents", "prot_idents", "ms2_scans"  ## Additional information to be caried over to the next step
         ])
 
         for fm, q in zip(features_mapping, queries):

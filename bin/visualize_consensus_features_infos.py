@@ -3,8 +3,8 @@
 import argparse
 import os
 import csv
-
 from ast import literal_eval
+
 import plotly.graph_objects as go
 import pandas as pd
 
@@ -24,7 +24,6 @@ if __name__ == "__main__":
     if not os.path.exists(args.output_folder_plots):
         os.makedirs(args.output_folder_plots)
 
-
     ### PLOT MISSING VALUES
     # Read only needed columns from the tsv file
     with open(args.tsv_file, "r") as in_file:
@@ -40,12 +39,11 @@ if __name__ == "__main__":
         df[file + "_____l_pep_ident"] = df[file + "_____l_pep_ident"].apply(lambda x: len(literal_eval(x)) if not pd.isna(x) else -1)
         df.loc[df[file + "_____l_pep_ident"] > 1, file + "_____l_pep_ident"] = 1
 
-
     # Get Number of missing values per row
     df_intens = df[[x for x in df.columns if x.endswith("_____intensity")]]
     missing_values = df_intens.isna().sum(axis=1)
 
-    # Count and do a bar plot of the missing values
+    # Count the missing values and do a bar plot
     missing_values_count = missing_values.value_counts().sort_index()
     fig = go.Figure()
     fig.add_trace(go.Bar(x=missing_values_count.index, y=missing_values_count.values))
@@ -68,7 +66,6 @@ if __name__ == "__main__":
                 )])
     fig.update_yaxes(type="log")
     fig.write_html(os.path.join(args.output_folder_plots, "missing_values_per_CFeature.html"))
-
 
     # Get Number of missing values per row for identified and unidentified 
     df["identified"] = df[[x for x in df.columns if x.endswith("_____l_pep_ident")]].replace(-1, 0).sum(axis=1) == 1
@@ -108,6 +105,3 @@ if __name__ == "__main__":
                 )])
     fig.update_yaxes(type="log")
     fig.write_html(os.path.join(args.output_folder_plots, "missing_values_per_CFeature_by_identification.html"))
-
-
-

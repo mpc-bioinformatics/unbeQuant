@@ -42,6 +42,7 @@ pip install h5py
 pip install kaleido
 # Install biosaur2
 pip install biosaur2
+# XLSX (final) reports 
 pip install xlsxwriter
 
 
