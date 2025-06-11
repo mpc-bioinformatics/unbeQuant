@@ -6,6 +6,7 @@ The realized workflows are implemented with the [Nextflow DSL 2](https://www.nex
 
 If you are interested in running **unbeQuant**, checkout **Prerequisites** of how to setup unbeQuant. This repository provides two workflow variants and the quantification, containing the actual modules. A brief description on how thes can be called individually can be found in **Workflow Scripts**.
 
+![unbeQuant_logo](resources/logo_full.png)
 
 ## Prerequisites
 
