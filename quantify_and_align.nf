@@ -248,7 +248,7 @@ process visualize_RT_transoformations {
 
 
 process generate_feature_ident_intesity_table {
-    publishDir "${params.qal_outdir}/statistics___${fdr}", mode:'copy'
+    publishDir "${params.qal_outdir}/final_report___${fdr}", mode:'copy'
     container "luxii/unbequant:latest"
 
     input:
@@ -272,7 +272,7 @@ process generate_feature_ident_intesity_table {
 
 
 process generate_xlsx_reports_from_tables {
-    publishDir "${params.qal_outdir}/statistics___${fdr}", mode:'copy'
+    publishDir "${params.qal_outdir}/final_report___${fdr}", mode:'copy'
     container "luxii/unbequant:latest"
 
     input:
