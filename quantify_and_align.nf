@@ -289,7 +289,7 @@ process generate_xlsx_reports_from_tables {
 }
 
 process generate_plots_from_tables {
-    publishDir "${params.qal_outdir}/final_reports___${fdr}/plots", mode:'copy'
+    publishDir "${params.qal_outdir}/final_report___${fdr}/plots", mode:'copy'
     container "luxii/unbequant:latest"
 
     input:
