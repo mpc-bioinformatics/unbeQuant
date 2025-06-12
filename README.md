@@ -1,4 +1,6 @@
-# UnbeQuant
+![unbeQuant_logo](resources/logo_full_25.png)
+
+---
 
 Qauntifying the unknown on MS1 level. UnbeQuant allows the quantification of measured ions without identification annotations in a DDA setting for mass spectrometry proteomics data from Bruker or Thermo mass spectrometers. To achieve this it uses identification results and sets same identifications across runs as anchors to align multiple runs, providing a mixture of the following: Identified ions with quantitative values, only some identified ions with quantitative values as well as ions without any identification information.
 
@@ -6,7 +8,6 @@ The realized workflows are implemented with the [Nextflow DSL 2](https://www.nex
 
 If you are interested in running **unbeQuant**, checkout **Prerequisites** of how to setup unbeQuant. This repository provides two workflow variants and the quantification, containing the actual modules. A brief description on how thes can be called individually can be found in **Workflow Scripts**.
 
-![unbeQuant_logo](resources/logo_full.png)
 
 ## Prerequisites
 
