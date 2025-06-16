@@ -68,6 +68,7 @@ if __name__ == "__main__":
             tsv_rows[-1][7].append(float(fm[fm_rt_start]) * 60) # Append rt_start
             tsv_rows[-1][8].append(float(fm[fm_rt_end]) * 60) # Append rt_end
             tsv_rows[-1][9].append(list(h5["retention_times"][idx])) # Append retentiontime
+            tsv_rows[-1][9].append(list(h5["mass_to_charge"][idx])) # Append retentiontime
             tsv_rows[-1][10].append(list(h5["intensities"][idx])) # Append intensity
 
         else:
@@ -87,6 +88,7 @@ if __name__ == "__main__":
                 [float(fm[fm_rt_start]) * 60], # rt_starts in seconds
                 [float(fm[fm_rt_end]) * 60], # rt_ends in seconds
                 [list(h5["retention_times"][idx])], # retentiontimes
+                [list(h5["mass_to_charge"][idx])], # retentiontimes
                 [list(h5["intensities"][idx])], # intensities
                 fm[fm_ms2_scans] # ms2_scans
             ])   
@@ -111,6 +113,7 @@ if __name__ == "__main__":
             "l_rt_start",
             "l_rt_end",
             "l_retention_times",
+            "l_mass_to_charges",
             "l_intensities",
             "l_ms2_scans"
         ])

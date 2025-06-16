@@ -41,6 +41,7 @@ if __name__ == "__main__":
                 "l_rt_start": literal_eval,
                 "l_rt_end": literal_eval,
                 "l_retention_times": literal_eval,
+                "l_mass_to_charges": literal_eval,
                 "l_intensities": literal_eval,
                 "l_ms2_scans": literal_eval
                 }
@@ -70,6 +71,7 @@ if __name__ == "__main__":
         "l_rt_start",
         "l_rt_end",
         "l_retention_times",
+        "l_mass_to_charges",
         "l_intensities"
     ]
 
