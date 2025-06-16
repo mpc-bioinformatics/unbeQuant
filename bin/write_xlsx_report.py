@@ -56,6 +56,7 @@ if __name__ == "__main__":
         single_iso_bound_rt_end_idcs = [i for i, h in enumerate(RAW_header) if h.endswith("_____l_rt_end")]
         xic_intenst_idcs = [i for i, h in enumerate(RAW_header) if h.endswith("_____l_intensities")]
         xic_rt_idcs = [i for i, h in enumerate(RAW_header) if h.endswith("_____l_retention_times")]
+        xic_mz_idcs = [i for i, h in enumerate(RAW_header) if h.endswith("_____l_mass_to_charges")]
 
         final_output_list = [
             (ceid_idx, "Identifier", 128, False),
@@ -79,6 +80,7 @@ if __name__ == "__main__":
             (single_iso_bound_rt_end_idcs, "Single_Isotope_rt_end", None, True),
             (xic_intenst_idcs, "XICs_intensities", None, True),
             (xic_rt_idcs, "XICs_retention_times", None, True),
+            (xic_mz_idcs, "XICs_mass_to_charges", None, True),
         ]
 
         # Create workbook and set the top level header with merged cells
