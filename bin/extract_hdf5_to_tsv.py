@@ -48,6 +48,7 @@ if __name__ == "__main__":
     fm_identifier = feature_mapping_headers.index("identifier")
     fm_charge = feature_mapping_headers.index("charge")
     fm_pep_idents = feature_mapping_headers.index("pep_idents")
+    fm_raw_pep_idents = feature_mapping_headers.index("raw_pep_idents")
     fm_prot_idents = feature_mapping_headers.index("prot_idents")
     fm_ms2_scans = feature_mapping_headers.index("ms2_scans")
     fm_mz_start = feature_mapping_headers.index("mz_start")
@@ -80,6 +81,7 @@ if __name__ == "__main__":
                 fm[fm_charge], # charge
                 # These two are in lists in case that there are many (different) idents for a feature. (can be iterated via a zip-loop)
                 fm[fm_pep_idents], # pep_idents (if any)
+                fm[fm_raw_pep_idents], # raw_pep_idents (peptides with modifications and such, if any)
                 fm[fm_prot_idents], # prot_idents (if any)
                 # These are in lists (and list in lists for each isotope)
                 # These are parallel lists and can be itereated in parallel (e.g. with a zip-loop)
@@ -107,6 +109,7 @@ if __name__ == "__main__":
             "intensity",
             "charge",
             "l_pep_ident",
+            "l_raw_pep_ident",
             "l_prot_ident",
             "l_mz_start",
             "l_mz_end",

@@ -38,6 +38,7 @@ if __name__ == "__main__":
         ceid_idx = RAW_header.index("openms_ceid")
         intensity_idcs = [i for i, h in enumerate(RAW_header) if h.endswith("_____intensity")]
         pep_ident_idcs = [i for i, h in enumerate(RAW_header) if h.endswith("_____l_pep_ident")]
+        raw_pep_ident_idcs = [i for i, h in enumerate(RAW_header) if h.endswith("_____l_raw_pep_ident")]
         prot_ident_idcs = [i for i, h in enumerate(RAW_header) if h.endswith("_____l_prot_ident")]
         charge_idcs = [i for i, h in enumerate(RAW_header) if h.endswith("_____charge")]
         ms2_scans_idcs = [i for i, h in enumerate(RAW_header) if h.endswith("_____l_ms2_scans")]
@@ -62,6 +63,7 @@ if __name__ == "__main__":
             (ceid_idx, "Identifier", 128, False),
             (intensity_idcs, "Intensities", 96, True),
             (pep_ident_idcs, "Peptide identification", 96, True),
+            (raw_pep_ident_idcs, "Modified Peptide identification", 96, True),
             (prot_ident_idcs, "Protein identification", 96, True),
             (charge_idcs, "Charge", 96, True),
             (ms2_scans_idcs, "MS2_Scans", 96, True),

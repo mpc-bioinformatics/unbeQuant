@@ -30,16 +30,20 @@ if __name__ == "__main__":
         scans = feature.getMetaValue("unbeQuant_MS2_Scan_Map")
 
         pep_idents = []
+        raw_pep_idents = []
         prot_idents = []
         for pep_id in feature.getPeptideIdentifications():
             seq = pep_id.getHits()[0].getSequence().toString()
+            raw_pep = pep_id.getHits()[0].getMetaValue("raw_peptide")
             prots = pep_id.getMetaValue("proteins")
+            
 
             # If a peptide is already in idents, we do not append, otherwise we append.
             # E.G.: PEPa -> ProtA, PEPb -> ProtA, we want [PEPa, PEPb] and [ProtA, ProtA]
             # E.G.: PEPa -> ProtA, PEPa -> ProtA, we want only [PEPa] and [ProtA]
             if seq not in pep_idents:
                 pep_idents.append(seq)
+                raw_pep_idents.append(raw_pep)
                 prot_idents.append(prots)
 
         # Prepare query for XIC-Extractor and collect other information from the feature (isotope wise)
@@ -57,7 +61,7 @@ if __name__ == "__main__":
             queries.append(d)
 
             # Append the feature mapping with all the information for a single query (for a single isotope)
-            features_mapping.append(("f_" + str(feature.getUniqueId()), mz_start, mz_end, rt_start, rt_end, feature.getCharge(), pep_idents, prot_idents, scans))
+            features_mapping.append(("f_" + str(feature.getUniqueId()), mz_start, mz_end, rt_start, rt_end, feature.getCharge(), pep_idents, raw_pep_idents, prot_idents, scans))
 
 
     # Write query file for xic-extractor
@@ -66,11 +70,11 @@ if __name__ == "__main__":
 
         csv_out.writerow([
             "identifier", "mz_start", "mz_end", "rt_start", "rt_end", "mz", "ppm", "ms_level", ## Needed for the xic_extractor
-            "charge", "pep_idents", "prot_idents", "ms2_scans"  ## Additional information to be caried over to the next step
+            "charge", "pep_idents", "raw_pep_idents", "prot_idents", "ms2_scans"  ## Additional information to be caried over to the next step
         ])
 
         for fm, q in zip(features_mapping, queries):
             csv_out.writerow([
                 fm[0], q["mz_start"], q["mz_end"], q["rt_start"], q["rt_end"], None, None, "ms",
-                fm[5], fm[6], fm[7], fm[8]
+                fm[5], fm[6], fm[7], fm[8], fm[9]
             ])

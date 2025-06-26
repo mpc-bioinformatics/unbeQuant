@@ -39,6 +39,7 @@ if __name__ == "__main__":
     run_name = args.tsv_file.split(os.sep)[-1]
     # Taken and modified from https://github.com/OpenMS/OpenMS/issues/4417
     psms = pd.read_csv(args.tsv_file, sep='\t', header=0)
+    raw_peptide_col = "peptide_seq" if "peptide_seq" in psms else "modified_peptide"
     peptide_ids = []
     for _, psm in psms.iterrows():
         peptide_id = pyopenms.PeptideIdentification()
@@ -53,6 +54,7 @@ if __name__ == "__main__":
         peptide_hit.setRank(1)
         peptide_hit.setCharge(psm['charge'])
         peptide_hit.setSequence(pyopenms.AASequence.fromString(psm['plain_peptide']))
+        peptide_hit.setMetaValue("raw_peptide", psm[raw_peptide_col])
         peptide_id.setHits([peptide_hit])
         peptide_ids.append(peptide_id)
 
