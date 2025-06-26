@@ -35,6 +35,7 @@ if __name__ == "__main__":
         dict_of_single_features[filename] = pd.read_csv(ftsv, sep='\t',
             converters={
                 "l_pep_ident": literal_eval,
+                "l_raw_pep_ident": literal_eval,
                 "l_prot_ident": literal_eval,
                 "l_mz_start": literal_eval,
                 "l_mz_end": literal_eval,
@@ -62,6 +63,7 @@ if __name__ == "__main__":
     header_per_file = [
         "intensity",
         "l_pep_ident",
+        "l_raw_pep_ident",
         "l_prot_ident",
         "openms_fid",
         "charge",
@@ -78,6 +80,7 @@ if __name__ == "__main__":
     header_per_file_reduced = [
         "intensity",
         "l_pep_ident",
+        "l_raw_pep_ident",
         "l_prot_ident",
         "openms_fid",
         "charge",
