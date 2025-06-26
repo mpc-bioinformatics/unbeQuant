@@ -64,13 +64,13 @@ if __name__ == "__main__":
         if fm[fm_identifier] ==  prev_id:
             # We append to the last entry
             tsv_rows[-1][1].append(np.trapz(h5["intensities"][idx], h5["retention_times"][idx])) # Using the trapezoid function to get the AUC for a trace (XIC of one isotope)
-            tsv_rows[-1][5].append(fm[fm_mz_start]) # Append mz_start
-            tsv_rows[-1][6].append(fm[fm_mz_end]) # Append mz_end
-            tsv_rows[-1][7].append(float(fm[fm_rt_start]) * 60) # Append rt_start
-            tsv_rows[-1][8].append(float(fm[fm_rt_end]) * 60) # Append rt_end
-            tsv_rows[-1][9].append(list(h5["retention_times"][idx])) # Append retentiontime
-            tsv_rows[-1][9].append(list(h5["mass_to_charge"][idx])) # Append retentiontime
-            tsv_rows[-1][10].append(list(h5["intensities"][idx])) # Append intensity
+            tsv_rows[-1][6].append(fm[fm_mz_start]) # Append mz_start
+            tsv_rows[-1][7].append(fm[fm_mz_end]) # Append mz_end
+            tsv_rows[-1][8].append(float(fm[fm_rt_start]) * 60) # Append rt_start
+            tsv_rows[-1][9].append(float(fm[fm_rt_end]) * 60) # Append rt_end
+            tsv_rows[-1][10].append(list(h5["retention_times"][idx])) # Append retentiontime
+            tsv_rows[-1][11].append(list(h5["mass_to_charge"][idx])) # Append retentiontime
+            tsv_rows[-1][12].append(list(h5["intensities"][idx])) # Append intensity
 
         else:
             prev_id = fm[fm_identifier]
