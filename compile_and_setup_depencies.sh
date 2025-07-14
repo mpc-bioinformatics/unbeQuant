@@ -39,7 +39,7 @@ pip install pyopenms==3.1.0
 # Extracting XICs from hdf5
 pip install h5py
 # Exporting figures
-pip install kaleido
+pip install kaleido==0.2.1
 # Install biosaur2
 pip install biosaur2
 # XLSX (final) reports 
