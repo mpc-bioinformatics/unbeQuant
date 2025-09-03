@@ -2,7 +2,10 @@
 
 import argparse
 import os
+import sys
 import csv
+csv.field_size_limit(sys.maxsize)
+
 from ast import literal_eval
 
 import plotly.graph_objects as go

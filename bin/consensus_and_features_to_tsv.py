@@ -2,7 +2,9 @@
 
 import argparse
 import os
+import sys
 import csv
+csv.field_size_limit(sys.maxsize)
 from ast import literal_eval
 
 import tqdm
