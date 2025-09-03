@@ -1,7 +1,9 @@
 #!/bin/env python
 
 import argparse
+import sys
 import csv
+csv.field_size_limit(sys.maxsize)
 
 import numpy as np
 import h5py
