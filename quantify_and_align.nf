@@ -14,6 +14,7 @@ params.qal_charge_high = 8  // Maximum charge of a feature to be considered (bio
 params.qal_ppm_tolerance = 5  // Tolerance for the biosaur2 to use to map identifications on it, as well as to generate features (biosaur2 -htol and -itol parameters). The ppm tolerance should be set to the same value as it has been used for the search engine for identification of MS2 spectra.
 params.qal_minlh = 7  // Minimum number of MS1 scans to be considered for a feature. Check out biosaur2 documnentation to set the correct value. (biosaur2 -minlh parameter)
 params.qal_additional_biosaur_parameters  = ""  // Additional parameters for biosaur2. Check out the biosaur2 documentation if you want to set something specific.
+params.qal_additional_feature_linker_params = ""  // Additional parameters for the OpenMS FeatureLinkerUnlabeled step. E.G.: "-algorithm:distance_RT:max_difference 300.0" in case of not a good alignment. Check out the OpenMS documentation. 
 params.qal_mini = 1  // Minimum intensity for biosaur2 to consider a peak for feature finding. (biosaur2 -mini parameter).
 params.qal_rt_enlarge_factor = 0.5  // A factor value to enlarge the RT-window for matching MS2 with features. This factor allow to match MS2 spectra to features, allowing a RT-error to the boundaries of a feature. Formula which enlarges the feature in the RT-dimension: "(MaxRT-MinRT)*enlarge_factor".
 params.qal_protgraph_was_used = false  // A Flag which is needed for the output to know which parsing mode and which column of "fasta_id" and "fasta_desc" needs to be taken. If you searched prior with ProtGraph, set this to true. 
@@ -142,7 +143,7 @@ process create_feature_xml {
 process match_feature_with_idents {
     container "luxii/unbequant:latest"
     publishDir "${params.qal_outdir}/features_with_annotated_identifications", mode:'copy', pattern:'*____with_identifications.featureXML'
-    publishDir "${params.qal_outdir}/features_with_annotated_identifications/cutoff_plots", mode:'copy', pattern:'*____cutoff_plot.html'
+    publishDir "${params.qal_outdir}/visualizations___${fdr}/cutoff_plots", mode:'copy', pattern:'*____cutoff_plot.html'
 
     input:
     tuple val(file_identifier), val(fdr), file(ident_tsv), file(featurexml)
@@ -215,7 +216,7 @@ process map_alignment_and_consensus_generation {
     \$(get_cur_bin_dir.sh)/openms/usr/bin/MapAlignerTreeGuided -in \${SORTED_FEATURES[@]} -out \${NEW_FEATURES[@]} -trafo_out \${NEW_FEATURES_TRAFO[@]}
 
     # Consensus Generation
-    \$(get_cur_bin_dir.sh)/openms/usr/bin/FeatureLinkerUnlabeled -in \${NEW_FEATURES[@]} -out consensus_____${fdr}.consensusXML
+    \$(get_cur_bin_dir.sh)/openms/usr/bin/FeatureLinkerUnlabeled -algorithm:distance_MZ:max_difference ${params.qal_ppm_tolerance} -algorithm:distance_MZ:unit "ppm" ${params.qal_additional_feature_linker_params} -in \${NEW_FEATURES[@]} -out consensus_____${fdr}.consensusXML
     """
 }
 
@@ -289,7 +290,7 @@ process generate_xlsx_reports_from_tables {
 }
 
 process generate_plots_from_tables {
-    publishDir "${params.qal_outdir}/final_report___${fdr}/plots", mode:'copy'
+    publishDir "${params.qal_outdir}/visualizations___${fdr}", mode:'copy'
     container "luxii/unbequant:latest"
 
     input:
@@ -299,7 +300,7 @@ process generate_plots_from_tables {
     file("*.html")
 
     """
-    PYTHONUNBUFFERED=1 visualize_consensus_features_infos.py -tsv_file ${full_file}
+    PYTHONUNBUFFERED=1 visualize_consensus_features_infos.py -minlh_parameter ${params.qal_minlh} -tsv_file ${full_file}
     """
 }
 
