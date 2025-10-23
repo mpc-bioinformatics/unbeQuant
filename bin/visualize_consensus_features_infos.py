@@ -9,6 +9,7 @@ csv.field_size_limit(sys.maxsize)
 from ast import literal_eval
 
 import plotly.graph_objects as go
+import plotly.express as px
 import pandas as pd
 import numpy as np
 
