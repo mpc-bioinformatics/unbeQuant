@@ -10,12 +10,15 @@ from ast import literal_eval
 
 import plotly.graph_objects as go
 import pandas as pd
+import numpy as np
 
 
 def argparse_setup():
     parser = argparse.ArgumentParser()
     parser.add_argument("-tsv_file", help="The final tsv file UnbeQuant produces (with all columns)")
     parser.add_argument("-output_folder_plots", help="The featureXML file, containing the user param about the MS2 scans", default=".")
+    parser.add_argument("-minlh_parameter", help="The minlh parameter used for the quantification", type=int, default=12)
+    parser.add_argument("-minlh_up_to", help="The maximum minlh value to be considered for the estimation", type=int, default=100)
 
     return parser.parse_args()
 
@@ -108,3 +111,123 @@ if __name__ == "__main__":
                 )])
     fig.update_yaxes(type="log")
     fig.write_html(os.path.join(args.output_folder_plots, "missing_values_per_CFeature_by_identification.html"))
+
+
+    ### PLOT minlh ESTIMATIONS
+
+
+    with open(args.tsv_file, 'r') as f:
+        # Read TSV and get relevant columns
+        reader = csv.reader(f, delimiter='\t')
+        all_headers = next(reader)
+        rts_idcs = [idx for idx, h in enumerate(all_headers) if h.endswith("_____l_retention_times")]
+        files = [all_headers[rt_idx].replace("_____l_retention_times", "") for rt_idx in rts_idcs]
+        ms2s_idcs = [all_headers.index(f + "_____l_ms2_scans") for f in files]
+        raw_peps_idcs = [all_headers.index(f + "_____l_raw_pep_ident") for f in files]
+
+        # Get data for minlh estimation
+        all_count = np.zeros(args.minlh_up_to, dtype=int)
+        all_count_first_iso = np.zeros(args.minlh_up_to, dtype=int)
+        ms2s_count = np.zeros(args.minlh_up_to, dtype=int)
+        ms2s_count_first_iso = np.zeros(args.minlh_up_to, dtype=int)
+        no_ms2s_count = np.zeros(args.minlh_up_to, dtype=int)
+        no_ms2s_count_first_iso = np.zeros(args.minlh_up_to, dtype=int)
+        ident_count = np.zeros(args.minlh_up_to, dtype=int)
+        ident_count_first_iso = np.zeros(args.minlh_up_to, dtype=int)
+        unident_count = np.zeros(args.minlh_up_to, dtype=int)
+        unident_count_first_iso = np.zeros(args.minlh_up_to, dtype=int)
+        count_traces = 0
+        count_features = 0
+        for row in reader:
+            for rt_idx, ms2s_idx, raw_pep_idx in zip(rts_idcs, ms2s_idcs, raw_peps_idcs):
+                # Get RTs
+                if row[rt_idx]:
+                    rts = literal_eval(row[rt_idx])
+                    count_features += 1
+                    # Check if it contains an MS2
+                    is_with_ms2 = False
+                    if row[ms2s_idx]:
+                        
+                        ms2s_set = set(literal_eval(row[ms2s_idx]))
+                        is_with_ms2 = len(ms2s_set) > 0
+                    # Check if it is identified:
+                    is_ident = False
+                    if row[raw_pep_idx]:
+                        raw_pep_set = set(literal_eval(row[raw_pep_idx]))
+                        is_ident = len(raw_pep_set) > 0
+
+                    # For all traces
+                    all_count_first_iso[:len(rts[0])+1] += 1
+                    for rt_list in rts:
+                        count_traces += 1
+                        all_count[:len(rt_list)+1] += 1
+
+                    # For MS2s
+                    if is_with_ms2:
+                        ms2s_count_first_iso[:len(rts[0])+1] += 1
+                        for rt_list in rts:
+                            ms2s_count[:len(rt_list)+1] += 1
+                    else:
+                        no_ms2s_count_first_iso[:len(rts[0])+1] += 1
+                        for rt_list in rts:
+                            no_ms2s_count[:len(rt_list)+1] += 1
+                    
+                    # For identification status
+                    if is_ident:
+                        ident_count_first_iso[:len(rts[0])+1] += 1
+                        for rt_list in rts:
+                            ident_count[:len(rt_list)+1] += 1
+                    else:
+                        unident_count_first_iso[:len(rts[0])+1] += 1
+                        for rt_list in rts:
+                            unident_count[:len(rt_list)+1] += 1
+
+        # Plot MS2s
+        df = pd.DataFrame({
+            "All Traces": all_count[:100],
+            "Traces with MS2": ms2s_count[:100],
+            "Traces without MS2": no_ms2s_count[:100],
+            "index": range(len(all_count))[:100],
+        })
+        melt_df = df.melt(id_vars=["index"])
+
+        fig = px.scatter(melt_df, x="index", y="value", color="variable",
+                        title=f"Estimated 'minlh' for > {args.minlh_parameter} split by MS2 status. Number of found traces: {count_traces}. Number of found features: {count_features}",
+                        labels={"index": "minlh-Parameter", "value": "#Traces", "variable": "MS2 Status"}
+        )
+        fig.add_vline(x=args.minlh_parameter, line_dash="dash", line_color="red", annotation_position="top right",
+            annotation_text=f"minlh-parameter: {args.minlh_parameter} ",
+            annotation_font_color="red"
+        )
+        to_pt = np.argmax(ms2s_count > no_ms2s_count)
+        if to_pt > 0:
+            fig.add_vline(x=to_pt, line_dash="dash", line_color="blue",
+                annotation_text=f"Trade-Off at {to_pt} ", annotation_position="bottom right",
+                annotation_font_color="blue"
+            )
+        fig.write_html(os.path.join(args.output_folder_plots, "unbequant_minlh_estimations_ms2s.html"))
+
+        # Plot Identifications
+        df = pd.DataFrame({
+            "All Traces": all_count[:100],
+            "Identified Traces": ident_count[:100],
+            "Unidentified Traces": unident_count[:100],
+            "index": range(len(all_count))[:100],
+        })
+        melt_df = df.melt(id_vars=["index"])
+
+        fig = px.scatter(melt_df, x="index", y="value", color="variable",
+                        title=f"Estimated 'minlh' for > {args.minlh_parameter} split by Identification status. Number of found traces: {count_traces}. Number of found features: {count_features}",
+                        labels={"index": "minlh-Parameter", "value": "#Traces", "variable": "Identification Status"}
+        )
+        fig.add_vline(x=args.minlh_parameter, line_dash="dash", line_color="red", annotation_position="top right",
+            annotation_text=f"minlh-parameter: {args.minlh_parameter} ",
+            annotation_font_color="red"
+        )
+        to_pt = np.argmax(ident_count > unident_count)
+        if to_pt > 0:
+            fig.add_vline(x=to_pt, line_dash="dash", line_color="blue",
+                annotation_text=f"Trade-Off at {to_pt} ", annotation_position="bottom right",
+                annotation_font_color="blue"
+            )
+        fig.write_html(os.path.join(args.output_folder_plots, "unbequant_minlh_estimations_identifications.html"))
