@@ -60,7 +60,7 @@ If the scripts exits without errors, only the `nextflow.config` setting needs to
 UnbeQuant organizes all its results into a single output folder. You can define the location of this folder using `--main_outdir`. The results are structured by the following:
 
 * Conversion and Identification results from [ProtGraph/ProGFASTAGen](https://github.com/mpc-bioinformatics/ProGFASTAGen)
-* XIC-Extraction results from [XIC-Extractor](https://github.com/mpc-bioinformatics/xic-extractor) as well ass
+* XIC-Extraction results from [XIC-Extractor](https://github.com/mpc-bioinformatics/xic-extractor) as well as
 * UnbeQuant results in the folder `quantification` (This contains un-/identified features and linked features between multiple runs)
 
 
