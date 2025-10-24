@@ -19,7 +19,7 @@ params.qal_mini = 1  // Minimum intensity for biosaur2 to consider a peak for fe
 params.qal_rt_enlarge_factor = 0.5  // A factor value to enlarge the RT-window for matching MS2 with features. This factor allow to match MS2 spectra to features, allowing a RT-error to the boundaries of a feature. Formula which enlarges the feature in the RT-dimension: "(MaxRT-MinRT)*enlarge_factor".
 params.qal_protgraph_was_used = false  // A Flag which is needed for the output to know which parsing mode and which column of "fasta_id" and "fasta_desc" needs to be taken. If you searched prior with ProtGraph, set this to true. 
 params.qal_intensity_method = "sum"  // Method to calculate the quantitative value of the individual XICs. Only available options are "top3_sum", "top3_mean", "maximum" and "sum".. See the python script for more details.
-params.qal_cutoff = "t0"  // Minimum quantitative value of the XICs to be considered for the quantification (this is the cutoff, which is applied after retrieving the intensity via the method described in qal_intensity_method) Use tX or qX to set the cutoff (see Python script for more details). Default to no intensity cutoff (or cutoff at intensity smalle or equal to 0).
+params.qal_cutoff = "t0"  // Minimum quantitative value of the XICs to be considered for the quantification (this is the cutoff, which is applied after retrieving the intensity via the method described in qal_intensity_method) Use tX (for intensity based thresholding) or qX (for removing x% lowest entries) to set the cutoff (see Python script for more details). Default to no intensity cutoff (or cutoff) at intensity smaller or equal to 0.
 
 // Include the XIC-Extractor for Bruker and Thermo
 PROJECT_DIR = workflow.projectDir
