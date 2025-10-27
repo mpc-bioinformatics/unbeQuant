@@ -33,6 +33,9 @@ The workflow is containerized completely via docker. Please follow the [installa
 
 > docker build -t luxii/unbequant:latest . -f docker/Dockerfile
 
+
+**NOTE**: UnbeQuant further relies on two other docker containers in the `include`-folder. Make sure to also build those to ensure that all containers are compatible to each other. Checkout the README.md in the respective folders on how to build the docker.
+
 ## Executing on Linux (locally without docker)
 
 If desiered, all dependencies can be installed on a linux computer (tested on Ubuntu 22.04 and ArchLinux) and the workflow can be run locally. the following packages need to be installed via apt:
