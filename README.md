@@ -2,7 +2,7 @@
 
 ---
 
-Qauntifying the unknown on MS1 level. UnbeQuant allows the quantification of measured ions without identification annotations in a DDA setting for mass spectrometry proteomics data from Bruker or Thermo mass spectrometers. To achieve this it uses identification results and sets same identifications across runs as anchors to align multiple runs, providing a mixture of the following: Identified ions with quantitative values, only some identified ions with quantitative values as well as ions without any identification information.
+Quantifying the unknown on MS1 level. UnbeQuant allows the quantification of measured ions without identification annotations in a DDA setting for mass spectrometry proteomics data from Bruker or Thermo mass spectrometers. To achieve this it uses identification results and sets same identifications across runs as anchors to align multiple runs, providing a mixture of the following: Identified ions with quantitative values, only some identified ions with quantitative values as well as ions without any identification information.
 
 The realized workflows are implemented with the [Nextflow DSL 2](https://www.nextflow.io/docs/latest/module.html) language utilizing the importing capabilties and reusing parts of existing workflows from [ProtGraph/ProGFASTAGen](https://github.com/mpc-bioinformatics/ProGFASTAGen) and [XIC-Extractor](https://github.com/mpc-bioinformatics/xic-extractor). The provided workflow can be imported and further used. These workflows utilize [biosaur2](https://github.com/markmipt/biosaur2) for feature detection, [OpenMS](https://openms.de/) for retention time alignment and consensus generation and many python scripts for intermediate steps and data conversion.
 
@@ -14,7 +14,6 @@ If you are interested in **unbeQuant**, checkout **materials_and_posters** to le
 This project uses git submodules to include other git projects into this one. To clone all project at once use the following:
 
 > git clone --recursive https://github.com/mpc-bioinformatics/unbeQuant
-
 
 Alternatively, use the following commands:
 
@@ -31,10 +30,18 @@ The workflow is containerized completely via docker. Please follow the [installa
 
 **NOTE**: If the docker image for unbeQuant is not available anymore, a local docker-container can be build with all needed dependencies for the workflow. if desired. We provide a Dockerfile in the `docker`-folder. To build it, simply execute the following while inside the root folder:
 
-> docker build -t luxii/unbequant:latest . -f docker/Dockerfile
+```shell
+# For the released version:
+docker build -t luxii/unbequant:$(grep 'version = ' nextflow.config | awk -F'"' '{print $2}') . -f docker/Dockerfile 
+# For building the latest version: 
+docker build -t luxii/unbequant:latest . -f docker/Dockerfile 
+# For development
+docker build -t luxii/unbequant:development . -f docker/Dockerfile 
+```
 
+**NOTE**: UnbeQuant further relies on two other docker containers in the `include`-folder. Make sure to also build those docker images to ensure that all containers are compatible to each other. Checkout the README.md in the respective folders on how to build the docker.
 
-**NOTE**: UnbeQuant further relies on two other docker containers in the `include`-folder. Make sure to also build those to ensure that all containers are compatible to each other. Checkout the README.md in the respective folders on how to build the docker.
+**NOTE**: This workflow uses profiles selecting the docker image tag based on it. The standard profile uses `<version>`, `-profile latest` uses `latest`, and `-profile developer` uses `development`.
 
 ## Executing on Linux (locally without docker)
 
@@ -67,7 +74,7 @@ UnbeQuant organizes all its results into a single output folder. You can define 
 * UnbeQuant results in the folder `quantification` (This contains un-/identified features and linked features between multiple runs)
 
 
-Within the `quantification` folder, you will find the followins sub folders:
+Within the `quantification` folder, you will find the following sub folders:
 
 | Folder                                  | Contents            | Description                                                                                                            |
 |-----------------------------------------|---------------------|------------------------------------------------------------------------------------------------------------------------|

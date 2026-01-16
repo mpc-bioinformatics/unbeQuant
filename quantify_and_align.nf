@@ -1,7 +1,7 @@
 #!/usr/bin/env nextflow
 nextflow.enable.dsl=2
 
-// Required Parameters
+// Required Parameters (defaults are provided as an examples)
 params.qal_spectra_files = "$PWD/raws"  // .RAW/.d-files from which the XICS are extracted.
 params.qal_mzmls = "$PWD/mzmls"  // Input mzML-files, which are used to generate the features. NOTE: They need to be named like the raw files, but with the .mzML extension (e.g. "sample1.raw" -> "sample1.mzML").
 params.qal_idents = "$PWD/raws/tsvs"  // Folder containing Identifications in TSV-format. Default: They need to be called with the suffix: "*qvalue_no_decoys_fdr_0.0[15].tsv". Change the parameter below, if they are called differently. The columns: containing the columns: "charge", "plain_peptide", "used_score", "retention_time", "exp_mass_to_charge", "fasta_id", "fasta_desc" need to be present.
@@ -123,7 +123,7 @@ workflow quantify_and_align {
 
 process create_feature_xml {
     stageInMode "copy"
-    container "luxii/unbequant:latest"
+    label "unbequant"
     memory "18G"
 
     input:
@@ -141,7 +141,7 @@ process create_feature_xml {
 
 
 process match_feature_with_idents {
-    container "luxii/unbequant:latest"
+    label "unbequant"
     publishDir "${params.qal_outdir}/features_with_annotated_identifications", mode:'copy', pattern:'*____with_identifications.featureXML'
     publishDir "${params.qal_outdir}/visualizations___${fdr}/cutoff_plots", mode:'copy', pattern:'*____cutoff_plot.html'
 
@@ -159,7 +159,7 @@ process match_feature_with_idents {
 
 process generate_queries_from_featurexmls {
     publishDir "${params.qal_outdir}/extracted_xics", mode:'copy', pattern: '*-queries.csv'
-    container "luxii/unbequant:latest"
+    label "unbequant"
 
     input:
     tuple val(file_identifier), val(fdr), file(feature_with_idents), file(raw)
@@ -174,7 +174,7 @@ process generate_queries_from_featurexmls {
 
 process extracted_xics_from_hdf5_to_tsv {
     publishDir "${params.qal_outdir}/features_with_annotated_identifications", mode:'copy'
-    container "luxii/unbequant:latest"
+    label "unbequant"
 
 
     input:
@@ -191,7 +191,7 @@ process extracted_xics_from_hdf5_to_tsv {
 
 process map_alignment_and_consensus_generation {
     publishDir "${params.qal_outdir}/features_with_annotated_identifications", mode:'copy'
-    container "luxii/unbequant:latest"
+    label "unbequant"
     cpus 8
 
     input:
@@ -222,7 +222,7 @@ process map_alignment_and_consensus_generation {
 
 process visualize_RT_transoformations {
     publishDir "${params.qal_outdir}/visualizations___${fdr}", mode:'copy'
-    container "luxii/unbequant:latest"
+    label "unbequant"
 
     input:
     tuple val(fdr), file(trafo_xmls)
@@ -250,7 +250,7 @@ process visualize_RT_transoformations {
 
 process generate_feature_ident_intesity_table {
     publishDir "${params.qal_outdir}/final_report___${fdr}", mode:'copy'
-    container "luxii/unbequant:latest"
+    label "unbequant"
 
     input:
     tuple val(fdr), file(consensus), file(tsvs)
@@ -274,7 +274,7 @@ process generate_feature_ident_intesity_table {
 
 process generate_xlsx_reports_from_tables {
     publishDir "${params.qal_outdir}/final_report___${fdr}", mode:'copy'
-    container "luxii/unbequant:latest"
+    label "unbequant"
 
     input:
     tuple val(fdr), file(full_file), file(reduced_file), file(minimal_file)
@@ -291,7 +291,7 @@ process generate_xlsx_reports_from_tables {
 
 process generate_plots_from_tables {
     publishDir "${params.qal_outdir}/visualizations___${fdr}", mode:'copy'
-    container "luxii/unbequant:latest"
+    label "unbequant"
 
     input:
     tuple val(fdr), file(full_file), file(reduced_file), file(minimal_file)
