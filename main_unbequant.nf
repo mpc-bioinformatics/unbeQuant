@@ -2,9 +2,9 @@
 nextflow.enable.dsl=2
 
 // Required Parameters (Input-Files)
-params.main_fasta_file = "" // The FASTA file of the species to be searched (downloadable from UniProtKB)
-params.main_raw_files_folder = ""  // The folder where the RAW/.d-files are located.
-params.main_comet_params = ""  // The comet parameter file for search. NOTE: Here the digestion should be explicitly turned on (or set appropiately, depending on the input FASTA.)).
+params.main_fasta_file = "/workspaces/unbeQuant/files/UP000005640_9606.fasta" // The FASTA file of the species to be searched (downloadable from UniProtKB)
+params.main_raw_files_folder = "/workspaces/unbeQuant/files/raws"  // The folder where the RAW/.d-files are located.
+params.main_comet_params = "/workspaces/unbeQuant/example_configurations/comet_config.txt"  // The comet parameter file for search. NOTE: Here the digestion should be explicitly turned on (or set appropiately, depending on the input FASTA.)).
 
 // Optional Parameters
 // See each nextflow script.
@@ -17,6 +17,8 @@ params.idc_outdir =  "${params.main_outdir}/identifications"
 params.sir_outdir =  "${params.main_outdir}/identifications_summarized"
 params.qal_outdir =  "${params.main_outdir}/quantifications"
 params.outdir =      "${params.main_outdir}/extraced_xics"
+params.map_alignment_features_tsv_dir = "${params.qal_outdir}/features_with_annotated_identifications"
+params.map_alignment_outdir = "${params.main_outdir}/heatmaps_with_features"
 
 // Set Parameters, since we use a FASTA (from UniProt most probably) which was not generated with ProtGraph
 params.sir_identification_from_protgraph = false
@@ -26,11 +28,13 @@ params.sir_count_same_protein_as_unique = true
 
 // Import Workflows
 PROJECT_DIR = workflow.projectDir
-include {convert_to_mgf} from PROJECT_DIR + '/include/ProGFASTAGen/convert_to_mgf.nf'
-include {convert_to_mzml} from PROJECT_DIR + '/include/ProGFASTAGen/convert_to_mzml.nf'
-include {identification_via_comet} from PROJECT_DIR + '/include/ProGFASTAGen/identification_via_comet.nf'
-include {summarize_ident_results} from PROJECT_DIR + '/include/ProGFASTAGen/summarize_ident_results.nf'
+include {convert_to_mgf} from PROJECT_DIR + '/ProGFASTAGen/convert_to_mgf.nf'
+include {convert_to_mzml} from PROJECT_DIR + '/ProGFASTAGen/convert_to_mzml.nf'
+include {identification_via_comet} from PROJECT_DIR + '/ProGFASTAGen/identification_via_comet.nf'
+include {summarize_ident_results} from PROJECT_DIR + '/ProGFASTAGen/summarize_ident_results.nf'
 include {quantify_and_align} from PROJECT_DIR + '/quantify_and_align.nf'
+include {map_mzml_features} from PROJECT_DIR + '/map_mzml_features.nf'
+
 
 
 // Standalone MAIN Workflow
@@ -80,4 +84,9 @@ workflow main_unbequant {
             convert_to_mzml.out,
             final_grouped_results
         )
+        // Map mzML features with identification data
+        mzml_files = Channel.fromPath(params.ctm_outdir + "/*.mzML")
+        tsv_files = Channel.fromPath(params.map_alignment_features_tsv_dir + "/*.tsv")
+        
+        map_mzml_features(mzml_files, tsv_files)
 }
