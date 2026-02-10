@@ -2,9 +2,9 @@
 nextflow.enable.dsl=2
 
 // Required Parameters
-params.qal_spectra_files = "$PWD/raws"  // .RAW/.d-files from which the XICS are extracted.
-params.qal_mzmls = "$PWD/mzmls"  // Input mzML-files, which are used to generate the features. NOTE: They need to be named like the raw files, but with the .mzML extension (e.g. "sample1.raw" -> "sample1.mzML").
-params.qal_idents = "$PWD/raws/tsvs"  // Folder containing Identifications in TSV-format. Default: They need to be called with the suffix: "*qvalue_no_decoys_fdr_0.0[15].tsv". Change the parameter below, if they are called differently. The columns: containing the columns: "charge", "plain_peptide", "used_score", "retention_time", "exp_mass_to_charge", "fasta_id", "fasta_desc" need to be present.
+params.qal_spectra_files = "/workspaces/unbeQuant/files/raws"  // .RAW/.d-files from which the XICS are extracted.
+params.qal_mzmls = "/workspaces/unbeQuant/results/mgfs_mzmls"  // Input mzML-files, which are used to generate the features. NOTE: They need to be named like the raw files, but with the .mzML extension (e.g. "sample1.raw" -> "sample1.mzML").
+params.qal_idents = "/workspaces/unbeQuant/results/identifications"  // Folder containing Identifications in TSV-format. Default: They need to be called with the suffix: "*qvalue_no_decoys_fdr_0.0[15].tsv". Change the parameter below, if they are called differently. The columns: containing the columns: "charge", "plain_peptide", "used_score", "retention_time", "exp_mass_to_charge", "fasta_id", "fasta_desc" need to be present.
 params.qal_idents_blob_filter = "*qvalue_no_decoys_fdr_0.0[15].tsv"  // Blob filter for the "params.qal_idents" folder (identification files). NOTE: "fdr_0.0[15]" needs to be present in the file name, since this workflow uses this to return fdr-specific results.
 params.qal_outdir = "$PWD/results"  // Output-Directory of the quantification results (splitted by the fdr thresholds).
 
@@ -23,7 +23,7 @@ params.qal_cutoff = "t0"  // Minimum quantitative value of the XICs to be consid
 
 // Include the XIC-Extractor for Bruker and Thermo
 PROJECT_DIR = workflow.projectDir
-include {retrieve_xics_from_raw_spectra} from PROJECT_DIR + '/include/xic-extractor/main.nf'
+include {retrieve_xics_from_raw_spectra} from PROJECT_DIR + '/xic-extractor/main.nf'
 
 // Standalone MAIN Workflow
 workflow {

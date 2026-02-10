@@ -60,94 +60,95 @@ def feature_pairing_optimized(all_feature_data_lists: List[List[Dict]]) -> List[
     matches = []
     
     print(f"  Processing {len(first_file_features)} features from first file...")
-    
-    for feature_idx, ref_feature in enumerate(first_file_features):
-        if feature_idx % 100 == 0:
-            print(f"    Paired {feature_idx}/{len(first_file_features)}", end='\r')
-        #TODO: multiply m/z-values to bring it to the same scala as the rt-values for better KD-Tree performance
-        ref_coords = np.array([[ref_feature['x_center'], ref_feature['y_center']]])
-        bp()
-        match_group = {'matches': [ref_feature.copy()]}
-        min_distances = []
-        
-        for file_idx in range(1, len(all_feature_data_lists)):
-            if kdtrees[file_idx] is None or len(file_features_list[file_idx]) == 0:
-                continue
+    for feature_file in file_features_list:
+        for feature_idx, ref_feature in enumerate(feature_file):
+            if feature_idx % 100 == 0:
+                print(f"    Paired {feature_idx}/{len(first_file_features)}", end='\r')
+            #TODO: multiply m/z-values to bring it to the same scala as the rt-values for better KD-Tree performance
+            #TODO: Run KD-Tree query for each file and collect matches within a certain distance cutoff, as well as their distances. Save in format {file_idx: (current_file(filename_feature-idx), nearest_feature(filename_feature-idx), distance)}. Then calculate match score based on distances and number of matches.
+            ref_coords = np.array([[ref_feature['x_center'], ref_feature['y_center']]])
+            bp()
+            match_group = {'matches': [ref_feature.copy()]}
+            min_distances = []
             
-            distance, idx = kdtrees[file_idx].query(ref_coords, k=1)
-            
-            if isinstance(distance, np.ndarray):
-                distance = distance.flat[0]
-            if isinstance(idx, np.ndarray):
-                idx = idx.flat[0]
-            
-            if idx >= 0:
-                nearest_feature = file_features_list[file_idx][int(idx)].copy()
-                min_distances.append(distance)
-                match_group['matches'].append(nearest_feature)
+            for file_idx in range(1, len(all_feature_data_lists)):
+                if kdtrees[file_idx] is None or len(file_features_list[file_idx]) == 0:
+                    continue
                 
-        
-        # Calculate match score
-        #TODO: Check if it makes sense!!!
-        if min_distances:
-            avg_distance = np.mean(min_distances)
-            match_score = float(np.exp(-avg_distance / 100.0))
-        else:
-            match_score = 1.0
-        
-        # Merge pep_ident values
-        all_pep_idents = set()
-        for matched_feature in match_group['matches']:
-            if 'pep_ident' in matched_feature and matched_feature['pep_ident']:
-                all_pep_idents.update(matched_feature['pep_ident'])
-        
-        unique_pep_idents = list(all_pep_idents) if all_pep_idents else None
-        
-        # Vectorized averaging of positions
-        match_coords = np.array([[f['x_center'], f['y_center']] for f in match_group['matches']])
-        match_mz_rt = np.array([[f['mz_start'], f['mz_end'], f['rt_start'], f['rt_end']] 
-                                 for f in match_group['matches']])
-        
-        avg_coords = np.mean(match_coords, axis=0)
-        avg_mz_rt = np.mean(match_mz_rt, axis=0)
-        
-        # Calculate per-feature scores based on distance from consolidated center
-        scored_features = []
-        for i, f in enumerate(match_group['matches']):
-            feature_dist = np.sqrt((f['x_center'] - avg_coords[0])**2 + (f['y_center'] - avg_coords[1])**2)
-            feature_score = float(np.exp(-feature_dist / 50.0))
-            f_scored = f.copy()
-            f_scored['feature_score'] = feature_score
+                distance, idx = kdtrees[file_idx].query(ref_coords, k=1)
+                
+                if isinstance(distance, np.ndarray):
+                    distance = distance.flat[0]
+                if isinstance(idx, np.ndarray):
+                    idx = idx.flat[0]
+                
+                if idx >= 0:
+                    nearest_feature = file_features_list[file_idx][int(idx)].copy()
+                    min_distances.append(distance)
+                    match_group['matches'].append(nearest_feature)
+                    
             
-            # Calculate scores to other features in the group
-            inter_feature_scores = {}
-            for j, other_f in enumerate(match_group['matches']):
-                if i != j:
-                    mz_dist = (f['x_center'] - other_f['x_center']) ** 2
-                    rt_dist = (f['y_center'] - other_f['y_center']) ** 2
-                    dist = np.sqrt(mz_dist + rt_dist)
-                    score = float(np.exp(-dist / 100.0))
-                    inter_feature_scores[other_f['filename']] = score
+            # Calculate match score
+            #TODO: Check if it makes sense!!!
+            if min_distances:
+                avg_distance = np.mean(min_distances)
+                match_score = float(np.exp(-avg_distance / 100.0))
+            else:
+                match_score = 1.0
             
-            f_scored['scores_to_features'] = inter_feature_scores
-            scored_features.append(f_scored)
-        
-        # Create consolidated match entry
-        consolidated_match = {
-            'match_score': match_score,
-            'num_files_matched': len(match_group['matches']),
-            'files': [f['filename'] for f in match_group['matches']],
-            'pep_ident': unique_pep_idents,
-            'x_center': float(avg_coords[0]),
-            'y_center': float(avg_coords[1]),
-            'mz_start': float(avg_mz_rt[0]),
-            'mz_end': float(avg_mz_rt[1]),
-            'rt_start': float(avg_mz_rt[2]),
-            'rt_end': float(avg_mz_rt[3]),
-            'individual_features': scored_features
-        }
-        
-        matches.append(consolidated_match)
+            # Merge pep_ident values
+            all_pep_idents = set()
+            for matched_feature in match_group['matches']:
+                if 'pep_ident' in matched_feature and matched_feature['pep_ident']:
+                    all_pep_idents.update(matched_feature['pep_ident'])
+            
+            unique_pep_idents = list(all_pep_idents) if all_pep_idents else None
+            
+            # Vectorized averaging of positions
+            match_coords = np.array([[f['x_center'], f['y_center']] for f in match_group['matches']])
+            match_mz_rt = np.array([[f['mz_start'], f['mz_end'], f['rt_start'], f['rt_end']] 
+                                    for f in match_group['matches']])
+            
+            avg_coords = np.mean(match_coords, axis=0)
+            avg_mz_rt = np.mean(match_mz_rt, axis=0)
+            
+            # Calculate per-feature scores based on distance from consolidated center
+            scored_features = []
+            for i, f in enumerate(match_group['matches']):
+                feature_dist = np.sqrt((f['x_center'] - avg_coords[0])**2 + (f['y_center'] - avg_coords[1])**2)
+                feature_score = float(np.exp(-feature_dist / 50.0))
+                f_scored = f.copy()
+                f_scored['feature_score'] = feature_score
+                
+                # Calculate scores to other features in the group
+                inter_feature_scores = {}
+                for j, other_f in enumerate(match_group['matches']):
+                    if i != j:
+                        mz_dist = (f['x_center'] - other_f['x_center']) ** 2
+                        rt_dist = (f['y_center'] - other_f['y_center']) ** 2
+                scored_features.append(f_scored)
+            
+            # Create consolidated match entry
+            consolidated_match = {
+                'match_score': match_score,
+                'num_files_matched': len(match_group['matches']),
+                'files': [f['filename'] for f in match_group['matches']],
+                'pep_ident': unique_pep_idents,
+                'x_center': float(avg_coords[0]),
+                'y_center': float(avg_coords[1]),
+                'mz_start': float(avg_mz_rt[0]),
+                'mz_end': float(avg_mz_rt[1]),
+                'rt_start': float(avg_mz_rt[2]),
+                'rt_end': float(avg_mz_rt[3]),
+                'individual_features': scored_features
+            }
+            
+            matches.append(consolidated_match)              dist = np.sqrt(mz_dist + rt_dist)
+                        score = float(np.exp(-dist / 100.0))
+                        inter_feature_scores[other_f['filename']] = score
+                
+                f_scored['scores_to_features'] = inter_feature_scores
+    
     #TODO: IGraph to build data structure
     #First KD-Tree on each file to find nearest neighbors - cutoff direkt auf euclidische/manhatten-distanz Distanz
     #manhatten-Distanz für einzelne berechnung der einzelnen Achsen
