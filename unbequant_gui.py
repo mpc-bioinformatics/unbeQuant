@@ -372,8 +372,17 @@ class UnbeQuantGUI:
         
         return file_path
     
-    def run_script(self, script_name: str, args: List[str]) -> Tuple[bool, str]:
-        """Run a bin script via subprocess"""
+    def run_script(self, script_name: str, args: List[str], timeout: int = 600) -> Tuple[bool, str]:
+        """Run a bin script via subprocess
+        
+        Args:
+            script_name: Name of the script in bin/
+            args: List of arguments to pass to the script
+            timeout: Timeout in seconds (default: 600 = 10 minutes)
+        
+        Returns:
+            Tuple of (success, output_or_error_message)
+        """
         script_path = BIN_DIR / script_name
         cmd = [sys.executable, str(script_path)] + args
         
@@ -383,14 +392,14 @@ class UnbeQuantGUI:
                 capture_output=True,
                 text=True,
                 check=True,
-                timeout=600  # 10 minute timeout
+                timeout=timeout
             )
             return True, result.stdout
         except subprocess.CalledProcessError as e:
             error_msg = f"Script failed: {e.stderr}"
             return False, error_msg
         except subprocess.TimeoutExpired:
-            return False, "Script timed out after 10 minutes"
+            return False, f"Script timed out after {timeout} seconds"
     
     def process_mzml_to_spectrum(self, mzml_path: Path, output_pkl: Path) -> bool:
         """Process mzML file to spectrum pickle"""
@@ -399,7 +408,8 @@ class UnbeQuantGUI:
             '--output_pickle', str(output_pkl),
             '--round_up_to', '2'
         ]
-        success, output = self.run_script('process_mzml_file.py', args)
+        # Use longer timeout for large mzML files (30 minutes)
+        success, output = self.run_script('process_mzml_file.py', args, timeout=1800)
         if success:
             print(f"✓ Processed mzML: {output_pkl.name}")
         return success
@@ -413,7 +423,8 @@ class UnbeQuantGUI:
             '--scale_colors', 'True',
             '--row_batch_size', '10'
         ]
-        success, output = self.run_script('create_heatmap_image_hdf5.py', args)
+        # Use longer timeout for large heatmaps (30 minutes)
+        success, output = self.run_script('create_heatmap_image_hdf5.py', args, timeout=1800)
         if success:
             print(f"✓ Created heatmap: {output_png.name}")
         return success
@@ -888,16 +899,25 @@ class UnbeQuantGUI:
             print(f"Error creating diagnostic plot: {error_details}")
             return f"<html><body><p>Error creating diagnostic: {str(e)}</p></body></html>"
     
-    def run(self, debug=True, port=8050):
-        """Run the Dash application"""
+    def run(self, debug=True, port=8050, host='127.0.0.1'):
+        """Run the Dash application
+        
+        Args:
+            debug: Enable debug mode
+            port: Port to run on
+            host: Host to bind to (default: 127.0.0.1 for localhost only,
+                  use '0.0.0.0' to expose to network)
+        """
         print(f"\n{'='*70}")
         print("unbeQuant GUI - Starting Application")
         print(f"{'='*70}")
         print(f"Data directory: {self.data_dir.absolute()}")
-        print(f"Access the GUI at: http://localhost:{port}")
+        print(f"Access the GUI at: http://{'localhost' if host == '127.0.0.1' else host}:{port}")
+        if host == '0.0.0.0':
+            print(f"⚠ WARNING: GUI is exposed to all network interfaces")
         print(f"{'='*70}\n")
         
-        self.app.run_server(debug=debug, port=port, host='0.0.0.0')
+        self.app.run_server(debug=debug, port=port, host=host)
 
 
 def main():
@@ -907,12 +927,13 @@ def main():
     parser = argparse.ArgumentParser(description="unbeQuant Interactive GUI")
     parser.add_argument("--data-dir", default="./gui_data", help="Directory for storing processed data")
     parser.add_argument("--port", type=int, default=8050, help="Port to run the web server on")
+    parser.add_argument("--host", default="127.0.0.1", help="Host to bind to (default: 127.0.0.1, use 0.0.0.0 for network access)")
     parser.add_argument("--debug", action="store_true", help="Run in debug mode")
     
     args = parser.parse_args()
     
     gui = UnbeQuantGUI(data_dir=args.data_dir)
-    gui.run(debug=args.debug, port=args.port)
+    gui.run(debug=args.debug, port=args.port, host=args.host)
 
 
 if __name__ == "__main__":
