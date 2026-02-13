@@ -8,7 +8,7 @@ nextflow.enable.dsl=2
 // paired feature datasets across multiple files.
 
 // Configuration parameters
-params.mmf_generate_heatmap = true  // Generate heatmap images from mzML files
+params.mmf_generate_heatmap = false  // Generate heatmap images from mzML files
 params.mmf_optimize_pairing = true  // Use optimized KD-tree based pairing
 params.mmf_match_cutoff = 0.98  // Minimum match score cutoff (0.0-1.0)
 params.mmf_round_up_to = 2  // Number of decimal places to round m/z values

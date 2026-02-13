@@ -72,6 +72,19 @@ def parse_nested_list(s):
     return []
 
 
+def parse_scalar(s):
+    """Parse scalar values from TSV - handles single numeric values."""
+    if isinstance(s, (int, float)):
+        return int(s) if isinstance(s, int) else int(float(s))
+    if isinstance(s, str):
+        try:
+            val = ast.literal_eval(s)
+            return int(val) if isinstance(val, (int, float)) else int(float(val))
+        except:
+            return None
+    return None
+
+
 def extract_feature_data(features_tsv: str, filename_base: str, round_up_to: int = 2) -> List[Dict]:
     """
     Extract feature data from TSV file.
@@ -94,6 +107,7 @@ def extract_feature_data(features_tsv: str, filename_base: str, round_up_to: int
         mz_ends = parse_list(row['l_mz_end'])
         rt_starts = parse_list(row['l_rt_start'])
         rt_ends = parse_list(row['l_rt_end'])
+        charge = parse_scalar(row['charge'])
         
         # Parse nested lists of actual coordinate data
         l_mass_to_charges_raw = parse_nested_list(row['l_mass_to_charges'])
@@ -153,6 +167,7 @@ def extract_feature_data(features_tsv: str, filename_base: str, round_up_to: int
                     'x_center': float(x_center),
                     'y_center': float(y_center),
                     'pep_ident': pep_ident,
+                    'charge': charge,
                     'filename': filename_base,
                     'feature_count': len(feature_ls)
                 })
