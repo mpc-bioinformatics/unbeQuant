@@ -8,6 +8,33 @@ The realized workflows are implemented with the [Nextflow DSL 2](https://www.nex
 
 If you are interested in **unbeQuant**, checkout **materials_and_posters** to learn more about it or see **Prerequisites** of how to setup unbeQuant locally. This repository provides two workflow variants containing the quantification. A brief description on how these can be called individually can be found in **Workflow Scripts**.
 
+## Interactive GUI
+
+UnbeQuant now includes an **interactive web-based GUI** for visualizing and analyzing results! The GUI provides:
+
+- **High-resolution heatmap viewer** with zoom and pan capabilities
+- **Feature overlay system** to compare features across multiple files
+- **Interactive feature boxes** with hover information (m/z, RT, charge, peptide IDs)
+- **Network graph visualization** showing connected features across runs
+- **Diagnostic plots** for individual feature analysis
+
+### Quick Start
+
+```bash
+# Install GUI dependencies
+pip install -r gui_requirements.txt
+
+# Launch the GUI
+./launch_gui.sh
+
+# Or run directly
+python3 unbequant_gui.py
+```
+
+Then open your browser to `http://localhost:8050`
+
+For detailed instructions, see [GUI_README.md](GUI_README.md).
+
 
 ## Cloning this repository
 
