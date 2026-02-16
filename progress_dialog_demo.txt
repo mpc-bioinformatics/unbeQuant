@@ -1,0 +1,128 @@
+╔══════════════════════════════════════════════════════════════════════════════╗
+║              PROGRESS DIALOG - VISUAL DEMONSTRATION                           ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+BEFORE (No Feedback):
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ User selects files...                                                        │
+│ >>> NOTHING HAPPENS <<<                                                      │
+│ (Files are processing in background, but no visual indication)               │
+│ User thinks: "Is it broken? Did it crash? Should I click again?"            │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+AFTER (With Progress Dialog):
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                                                                              │
+│  ┌────────────────────────────────────────────────────────────────────────┐ │
+│  │ Processing Files                                                        │ │
+│  ├────────────────────────────────────────────────────────────────────────┤ │
+│  │ Processing file 1/3: sample_data.mzML                                  │ │
+│  │                                                                         │ │
+│  │ [████████████████████████░░░░░░░░░░░░░░░░] 33.3%                      │ │
+│  │                                                                         │ │
+│  │ ┌─ Processing Details ──────────────────────────────────────────────┐  │ │
+│  │ │                                                                    │  │ │
+│  │ │ [10:15:30] Starting processing of 3 file pair(s)                  │  │ │
+│  │ │ [10:15:30] ==================================================     │  │ │
+│  │ │ [10:15:30] File 1/3: sample_data.mzML                             │  │ │
+│  │ │ [10:15:30] ==================================================     │  │ │
+│  │ │ [10:15:31] Step 1/3: Processing mzML file...                      │  │ │
+│  │ │ [10:15:31]   Running process_mzml_file.py...                      │  │ │
+│  │ │ [10:15:31]   Input: sample_data.mzML                              │  │ │
+│  │ │ [10:15:31]   Output: sample_data_spectrum_data.pkl                │  │ │
+│  │ │ [10:15:32]     Running: process_mzml_file.py                      │  │ │
+│  │ │ [10:15:33]     ✓ Loaded 1234 spectra                              │  │ │
+│  │ │ [10:15:34]   ✓ Spectrum data extracted                            │  │ │
+│  │ │ [10:15:34]   Loading spectrum data...                             │  │ │
+│  │ │ [10:15:34]   ✓ Loaded 50000 m/z values, 1200 RT values            │  │ │
+│  │ │ [10:15:35] Step 2/3: Creating heatmap image...                    │  │ │
+│  │ │ [10:15:35]   Running create_heatmap_image_hdf5.py...              │  │ │
+│  │ │ [10:15:35]   This may take several minutes for large files...     │  │ │
+│  │ │ [10:15:36]     Running: create_heatmap_image_hdf5.py              │  │ │
+│  │ │ [10:16:25]     ✓ Created heatmap image                            │  │ │
+│  │ │ [10:16:26]   ✓ Heatmap image created: sample_data_heatmap.png    │  │ │
+│  │ │ [10:16:26] Step 3/3: Extracting features from TSV...              │  │ │
+│  │ │ [10:16:26]   Running extract_feature_data.py...                   │  │ │
+│  │ │ [10:16:26]   Input: sample_data_features.tsv                      │  │ │
+│  │ │ [10:16:27]     Running: extract_feature_data.py                   │  │ │
+│  │ │ [10:16:28]     ✓ Loaded 5678 features                             │  │ │
+│  │ │ [10:16:29]   ✓ Features extracted                                 │  │ │
+│  │ │ [10:16:29]   Loading feature data...                              │  │ │
+│  │ │ [10:16:29]   Mapping 5678 features to pixel coordinates...        │  │ │
+│  │ │ [10:16:30]   ✓ Mapped 5678 features                               │  │ │
+│  │ │ [10:16:30] ✓ File 1/3 complete: sample_data                       │  │ │
+│  │ │                                                                    │  │ │
+│  │ │ [10:16:30] ==================================================     │  │ │
+│  │ │ [10:16:30] File 2/3: another_sample.mzML                          │  │ │
+│  │ │ [10:16:30] ==================================================     │  │ │
+│  │ │ [10:16:31] Step 1/3: Processing mzML file...                      │  │ │
+│  │ │ [10:16:31]   ✓ Using cached spectrum data: another_sample...     │  │ │
+│  │ │ [10:16:31]   Loading spectrum data...                             │  │ │
+│  │ │ [10:16:31]   ✓ Loaded 52000 m/z values, 1250 RT values            │  │ │
+│  │ │ [10:16:31] Step 2/3: Creating heatmap image...                    │  │ │
+│  │ │ [10:16:31]   ✓ Using cached heatmap: another_sample_heatmap.png  │  │ │
+│  │ │ [10:16:31] Step 3/3: Extracting features from TSV...              │  │ │
+│  │ │ [10:16:31]   ✓ Using cached features: another_sample_feature...  │  │ │
+│  │ │ [10:16:31]   Loading feature data...                              │  │ │
+│  │ │ [10:16:32]   Mapping 6012 features to pixel coordinates...        │  │ │
+│  │ │ [10:16:32]   ✓ Mapped 6012 features                               │  │ │
+│  │ │ [10:16:32] ✓ File 2/3 complete: another_sample                    │  │ │
+│  │ │                                                          ▲         │  │ │
+│  │ │                                                          │         │  │ │
+│  │ └──────────────────────────────────────────────────────Scrollable──┘  │ │
+│  │                                                                         │ │
+│  └────────────────────────────────────────────────────────────────────────┘ │
+│                                                                              │
+│  User can see:                                                              │
+│  ✓ Exactly what file is being processed                                    │
+│  ✓ What step it's on (1/3, 2/3, 3/3)                                       │
+│  ✓ Progress bar showing completion (33.3%)                                 │
+│  ✓ Detailed log of every action                                            │
+│  ✓ Timestamps showing when each step occurred                              │
+│  ✓ When cached data is used (FAST!)                                        │
+│  ✓ How many features/spectra were loaded                                   │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+CONSOLE OUTPUT (Simultaneously):
+─────────────────────────────────────────────────────────────────────────────
+$ python3 unbequant_tkinter_gui.py
+
+======================================================================
+Starting processing of 3 file pair(s)
+======================================================================
+
+[10:15:30] Starting processing of 3 file pair(s)
+[10:15:30] ==================================================
+[10:15:30] File 1/3: sample_data.mzML
+[10:15:30] ==================================================
+[10:15:31] Step 1/3: Processing mzML file...
+[10:15:31]   Running process_mzml_file.py...
+[10:15:31]   Input: sample_data.mzML
+[10:15:31]   Output: sample_data_spectrum_data.pkl
+[10:15:32]     Running: process_mzml_file.py
+[10:15:33]     ✓ Loaded 1234 spectra
+[10:15:34]   ✓ Spectrum data extracted
+[10:15:34]   Loading spectrum data...
+[10:15:34]   ✓ Loaded 50000 m/z values, 1200 RT values
+[10:15:35] Step 2/3: Creating heatmap image...
+...
+─────────────────────────────────────────────────────────────────────────────
+
+KEY FEATURES:
+═══════════════════════════════════════════════════════════════════════════════
+
+✓ PROGRESS BAR: Visual indicator (0-100%)
+✓ STATUS: Shows current file/step
+✓ DETAILED LOG: Every action timestamped and logged
+✓ SCROLLABLE: Can review all processing steps
+✓ CONSOLE OUTPUT: Same info in terminal for logging
+✓ CACHING SHOWN: "Using cached..." messages = fast processing
+✓ ERROR HANDLING: Errors clearly shown with context
+✓ NON-CLOSEABLE: Can't accidentally close during processing
+✓ AUTO-CLOSE: Closes automatically when done (after 1 second)
+
+BENEFIT:
+═══════════════════════════════════════════════════════════════════════════════
+
+Users no longer wonder "is anything happening?" - they can see EXACTLY what's
+happening at every step, with progress indication and detailed logging!
