@@ -20,6 +20,7 @@ from typing import Dict, List, Optional, Tuple
 import subprocess
 import threading
 import tempfile
+import time
 
 import numpy as np
 import pandas as pd
@@ -35,6 +36,88 @@ from matplotlib.patches import Rectangle
 # Add bin to path for importing modules
 BIN_DIR = Path(__file__).parent / 'bin'
 sys.path.insert(0, str(BIN_DIR))
+
+
+class ProgressDialog:
+    """Progress dialog with progress bar and detailed status"""
+    
+    def __init__(self, parent, title="Processing"):
+        """Initialize progress dialog"""
+        self.dialog = tk.Toplevel(parent)
+        self.dialog.title(title)
+        self.dialog.geometry("600x300")
+        self.dialog.transient(parent)
+        self.dialog.grab_set()
+        
+        # Main status label
+        self.status_var = tk.StringVar(value="Initializing...")
+        status_label = ttk.Label(self.dialog, textvariable=self.status_var,
+                                font=('Arial', 10, 'bold'))
+        status_label.pack(pady=10, padx=10)
+        
+        # Progress bar
+        self.progress_var = tk.DoubleVar(value=0)
+        self.progress_bar = ttk.Progressbar(
+            self.dialog, 
+            variable=self.progress_var,
+            maximum=100,
+            mode='determinate',
+            length=550
+        )
+        self.progress_bar.pack(pady=10, padx=25)
+        
+        # Percentage label
+        self.percent_var = tk.StringVar(value="0%")
+        percent_label = ttk.Label(self.dialog, textvariable=self.percent_var)
+        percent_label.pack(pady=5)
+        
+        # Detailed log
+        log_frame = ttk.LabelFrame(self.dialog, text="Processing Details")
+        log_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # Scrollable text widget for log
+        self.log_text = tk.Text(log_frame, height=10, width=70, wrap=tk.WORD)
+        scrollbar = ttk.Scrollbar(log_frame, command=self.log_text.yview)
+        self.log_text.configure(yscrollcommand=scrollbar.set)
+        
+        self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5, pady=5)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # Prevent closing during processing
+        self.dialog.protocol("WM_DELETE_WINDOW", self._on_close_attempt)
+        self.can_close = False
+    
+    def _on_close_attempt(self):
+        """Handle window close attempt"""
+        if self.can_close:
+            self.dialog.destroy()
+        else:
+            messagebox.showinfo("Processing", "Please wait for processing to complete.")
+    
+    def update_status(self, message: str):
+        """Update main status message"""
+        self.status_var.set(message)
+        self.dialog.update_idletasks()
+    
+    def update_progress(self, value: float):
+        """Update progress bar (0-100)"""
+        self.progress_var.set(value)
+        self.percent_var.set(f"{value:.1f}%")
+        self.dialog.update_idletasks()
+    
+    def log(self, message: str):
+        """Add message to log"""
+        timestamp = time.strftime("%H:%M:%S")
+        self.log_text.insert(tk.END, f"[{timestamp}] {message}\n")
+        self.log_text.see(tk.END)
+        self.dialog.update_idletasks()
+        # Also print to console
+        print(f"[{timestamp}] {message}")
+    
+    def close(self):
+        """Close the dialog"""
+        self.can_close = True
+        self.dialog.destroy()
 
 
 class HeatmapCanvas:
@@ -611,83 +694,173 @@ class UnbeQuantTkinterGUI:
         if not mzml_files or not tsv_files:
             return
         
-        # Process all files in background thread
-        thread = threading.Thread(target=self._process_multiple_files,
+        # Show progress dialog
+        print(f"\n{'='*70}")
+        print(f"Starting processing of {len(mzml_files)} file pair(s)")
+        print(f"{'='*70}\n")
+        
+        # Process all files in background thread with progress dialog
+        thread = threading.Thread(target=self._process_multiple_files_with_progress,
                                  args=(tuple(mzml_files), tuple(tsv_files)))
         thread.daemon = True
         thread.start()
     
-    def _process_multiple_files(self, mzml_files: tuple, tsv_files: tuple):
+    def _process_multiple_files_with_progress(self, mzml_files: tuple, tsv_files: tuple):
+        """Process multiple files with progress dialog"""
+        # Create progress dialog on main thread
+        self.root.after(0, self._show_progress_and_process, mzml_files, tsv_files)
+    
+    def _show_progress_and_process(self, mzml_files: tuple, tsv_files: tuple):
+        """Show progress dialog and process files"""
+        progress = ProgressDialog(self.root, "Processing Files")
+        
+        # Process in separate thread
+        def process_thread():
+            try:
+                self._process_multiple_files(mzml_files, tsv_files, progress)
+                # Close dialog on success
+                self.root.after(0, progress.close)
+            except Exception as e:
+                import traceback
+                error_msg = f"Critical error: {str(e)}\n{traceback.format_exc()}"
+                print(error_msg)
+                self.root.after(0, progress.close)
+                self.root.after(100, messagebox.showerror, "Processing Error", str(e))
+        
+        thread = threading.Thread(target=process_thread)
+        thread.daemon = True
+        thread.start()
+    
+    def _process_multiple_files(self, mzml_files: tuple, tsv_files: tuple, progress: ProgressDialog):
         """Process multiple mzML and TSV file pairs (runs in background thread)"""
         total_files = len(mzml_files)
+        progress.log(f"Starting processing of {total_files} file pair(s)")
         
         for idx, (mzml_file, tsv_file) in enumerate(zip(mzml_files, tsv_files), 1):
             try:
-                self.status_var.set(f"Processing file {idx}/{total_files}: {Path(mzml_file).name}...")
-                self._process_single_file(mzml_file, tsv_file)
+                file_name = Path(mzml_file).name
+                progress.update_status(f"Processing file {idx}/{total_files}: {file_name}")
+                progress.log(f"\n{'='*50}")
+                progress.log(f"File {idx}/{total_files}: {file_name}")
+                progress.log(f"{'='*50}")
+                
+                # Update status bar
+                self.status_var.set(f"Processing file {idx}/{total_files}: {file_name}...")
+                
+                # Process this file
+                self._process_single_file(mzml_file, tsv_file, progress, idx, total_files)
+                
+                # Update overall progress
+                overall_progress = (idx / total_files) * 100
+                progress.update_progress(overall_progress)
+                
             except Exception as e:
                 import traceback
                 error_msg = f"Error processing {Path(mzml_file).name}: {str(e)}\n{traceback.format_exc()}"
                 print(error_msg)
+                progress.log(f"ERROR: {str(e)}")
                 self.root.after(0, messagebox.showerror, "Error", 
                               f"Failed to process {Path(mzml_file).name}:\n{str(e)}")
         
         # Update UI on main thread
+        progress.log(f"\nAll files processed successfully!")
+        progress.update_status(f"Complete! Loaded {total_files} file(s)")
         self.root.after(0, self._update_file_selectors)
         self.status_var.set(f"Loaded {total_files} file(s)")
+        
+        # Wait a bit before closing
+        time.sleep(1)
     
-    def _process_single_file(self, mzml_file: str, tsv_file: str):
+    def _process_single_file(self, mzml_file: str, tsv_file: str, progress: ProgressDialog, 
+                            file_idx: int, total_files: int):
         """Process a single mzML and TSV file pair"""
         base_name = Path(mzml_file).stem
         
-        # 1. Process mzML file to spectrum pickle
+        # Calculate progress offsets for this file (each file is 1/total of the bar)
+        file_progress_start = ((file_idx - 1) / total_files) * 100
+        file_progress_range = 100 / total_files
+        
+        # Step 1: Process mzML file to spectrum pickle (33% of this file's progress)
+        progress.log(f"Step 1/3: Processing mzML file...")
         spectrum_pkl = self.data_dir / f"{base_name}_spectrum_data.pkl"
         
         if not spectrum_pkl.exists():
+            progress.log(f"  Running process_mzml_file.py...")
+            progress.log(f"  Input: {Path(mzml_file).name}")
+            progress.log(f"  Output: {spectrum_pkl.name}")
             self._run_script('process_mzml_file.py', 
                            ['--mzml', mzml_file,
                             '--output_pickle', str(spectrum_pkl),
-                            '--round_up_to', '2'])
+                            '--round_up_to', '2'],
+                           progress)
+            progress.log(f"  ✓ Spectrum data extracted")
+        else:
+            progress.log(f"  ✓ Using cached spectrum data: {spectrum_pkl.name}")
+        
+        progress.update_progress(file_progress_start + file_progress_range * 0.33)
         
         # Load spectrum data to get mz_dict and rt_dict
+        progress.log(f"  Loading spectrum data...")
         with open(spectrum_pkl, 'rb') as f:
             spectrum_data = pickle.load(f)
         
         self.spectrum_data[base_name] = spectrum_data
         mz_dict = spectrum_data['mz_dict']
         rt_dict = spectrum_data['rt_dict']
+        progress.log(f"  ✓ Loaded {len(mz_dict)} m/z values, {len(rt_dict)} RT values")
         
-        # 2. Create heatmap image
+        # Step 2: Create heatmap image (33% of this file's progress)
+        progress.log(f"Step 2/3: Creating heatmap image...")
         heatmap_png = self.data_dir / f"{base_name}_heatmap.png"
         if not heatmap_png.exists():
+            progress.log(f"  Running create_heatmap_image_hdf5.py...")
+            progress.log(f"  This may take several minutes for large files...")
             self._run_script('create_heatmap_image_hdf5.py',
                            ['--spectrum_pkl', str(spectrum_pkl),
                             '--output_png', str(heatmap_png),
                             '--log_scale', 'True',
                             '--scale_colors', 'True',
-                            '--row_batch_size', '10'])
+                            '--row_batch_size', '10'],
+                           progress)
+            progress.log(f"  ✓ Heatmap image created: {heatmap_png.name}")
+        else:
+            progress.log(f"  ✓ Using cached heatmap: {heatmap_png.name}")
         
-        # 3. Extract features from TSV
+        progress.update_progress(file_progress_start + file_progress_range * 0.66)
+        
+        # Step 3: Extract features from TSV (33% of this file's progress)
+        progress.log(f"Step 3/3: Extracting features from TSV...")
         feature_pkl = self.data_dir / f"{base_name}_feature_data.pkl"
         feature_json = self.data_dir / f"{base_name}_feature_data.json"
         if not feature_pkl.exists():
+            progress.log(f"  Running extract_feature_data.py...")
+            progress.log(f"  Input: {Path(tsv_file).name}")
             self._run_script('extract_feature_data.py',
                            ['--tsv', tsv_file,
                             '--output_pkl', str(feature_pkl),
                             '--output_json', str(feature_json),
                             '--round_up_to', '2',
                             '--feature_mode', 'CoM',
-                            '--generate_diagnostic', 'False'])
+                            '--generate_diagnostic', 'False'],
+                           progress)
+            progress.log(f"  ✓ Features extracted")
+        else:
+            progress.log(f"  ✓ Using cached features: {feature_pkl.name}")
         
         # Load feature data
+        progress.log(f"  Loading feature data...")
         with open(feature_pkl, 'rb') as f:
             features = pickle.load(f)
         
         # Map features to pixel coordinates for display
+        progress.log(f"  Mapping {len(features)} features to pixel coordinates...")
         mapped_features = self._map_features_to_pixels(features, mz_dict, rt_dict)
         
         self.feature_data[base_name] = mapped_features
         self.heatmap_files[base_name] = str(heatmap_png)
+        
+        progress.log(f"  ✓ Mapped {len(mapped_features)} features")
+        progress.log(f"✓ File {file_idx}/{total_files} complete: {base_name}")
     
     def _map_features_to_pixels(self, features: List[Dict], mz_dict: Dict, rt_dict: Dict) -> List[Dict]:
         """Map feature coordinates to pixel indices for display"""
@@ -866,15 +1039,29 @@ class UnbeQuantTkinterGUI:
                 self.heatmap_canvas.add_features(overlay_features, color=color, alpha=0.3, is_overlay=True)
                 color_idx += 1
     
-    def _run_script(self, script_name: str, args: List[str]):
-        """Run a bin script"""
+    def _run_script(self, script_name: str, args: List[str], progress: Optional[ProgressDialog] = None):
+        """Run a bin script with optional progress logging"""
         script_path = BIN_DIR / script_name
         cmd = [sys.executable, str(script_path)] + args
         
+        if progress:
+            progress.log(f"    Running: {script_name}")
+        
         result = subprocess.run(cmd, capture_output=True, text=True)
         
+        if progress and result.stdout:
+            # Log important lines from stdout
+            for line in result.stdout.split('\n'):
+                line = line.strip()
+                if line and ('✓' in line or 'Loaded' in line or 'Created' in line or 
+                           'Processing' in line or 'Error' in line or 'Warning' in line):
+                    progress.log(f"    {line}")
+        
         if result.returncode != 0:
-            raise RuntimeError(f"Script {script_name} failed:\n{result.stderr}")
+            error_msg = f"Script {script_name} failed:\n{result.stderr}"
+            if progress:
+                progress.log(f"    ERROR: {result.stderr}")
+            raise RuntimeError(error_msg)
     
     def on_feature_selected(self, feature: Dict):
         """Handle feature selection"""
