@@ -458,7 +458,7 @@ class UnbeQuantTkinterGUI:
         # File menu
         file_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="File", menu=file_menu)
-        file_menu.add_command(label="Load mzML + TSV", command=self.load_files)
+        file_menu.add_command(label="Load mzML + TSV Files...", command=self.load_files)
         file_menu.add_separator()
         file_menu.add_command(label="Exit", command=self.root.quit)
         
@@ -466,6 +466,7 @@ class UnbeQuantTkinterGUI:
         view_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="View", menu=view_menu)
         view_menu.add_command(label="Clear Features", command=self.clear_features)
+        view_menu.add_command(label="Refresh Display", command=self._display_current_heatmap)
         
         # Help menu
         help_menu = tk.Menu(menubar, tearoff=0)
@@ -474,8 +475,29 @@ class UnbeQuantTkinterGUI:
     
     def _create_layout(self):
         """Create the main layout"""
-        # Main container with three panels
-        main_paned = ttk.PanedWindow(self.root, orient=tk.HORIZONTAL)
+        # Main container
+        main_container = ttk.Frame(self.root)
+        main_container.pack(fill=tk.BOTH, expand=True)
+        
+        # Top control panel for file selection and overlays
+        control_frame = ttk.Frame(main_container)
+        control_frame.pack(side=tk.TOP, fill=tk.X, padx=5, pady=5)
+        
+        # Heatmap selector
+        ttk.Label(control_frame, text="Select Heatmap:").pack(side=tk.LEFT, padx=5)
+        self.heatmap_selector = ttk.Combobox(control_frame, width=30, state='readonly')
+        self.heatmap_selector.pack(side=tk.LEFT, padx=5)
+        self.heatmap_selector.bind('<<ComboboxSelected>>', self._on_heatmap_selected)
+        
+        ttk.Label(control_frame, text="  |  Feature Overlays:").pack(side=tk.LEFT, padx=5)
+        
+        # Overlay checkboxes frame
+        self.overlay_frame = ttk.Frame(control_frame)
+        self.overlay_frame.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+        self.overlay_checkboxes = {}
+        
+        # Main panel container with three panels
+        main_paned = ttk.PanedWindow(main_container, orient=tk.HORIZONTAL)
         main_paned.pack(fill=tk.BOTH, expand=True)
         
         # Left/Middle: Heatmap (larger)
@@ -503,102 +525,110 @@ class UnbeQuantTkinterGUI:
         self.diagnostic_panel = DiagnosticPanel(diagnostic_frame)
     
     def load_files(self):
-        """Load mzML and TSV files"""
-        # Ask for mzML file
-        mzml_file = filedialog.askopenfilename(
-            title="Select mzML file",
+        """Load multiple mzML and TSV files"""
+        # Ask for mzML files (multiple selection)
+        mzml_files = filedialog.askopenfilenames(
+            title="Select one or more mzML files",
             filetypes=[("mzML files", "*.mzML"), ("All files", "*.*")]
         )
         
-        if not mzml_file:
+        if not mzml_files:
             return
         
-        # Ask for TSV file
-        tsv_file = filedialog.askopenfilename(
-            title="Select TSV features file",
+        # Ask for TSV files (multiple selection, same count as mzML)
+        tsv_files = filedialog.askopenfilenames(
+            title=f"Select {len(mzml_files)} corresponding TSV features files (in same order)",
             filetypes=[("TSV files", "*.tsv"), ("All files", "*.*")]
         )
         
-        if not tsv_file:
+        if not tsv_files:
             return
         
-        # Process in background thread
-        thread = threading.Thread(target=self._process_files,
-                                 args=(mzml_file, tsv_file))
+        if len(mzml_files) != len(tsv_files):
+            messagebox.showerror(
+                "File Count Mismatch",
+                f"Number of mzML files ({len(mzml_files)}) must match "
+                f"number of TSV files ({len(tsv_files)})"
+            )
+            return
+        
+        # Process all files in background thread
+        thread = threading.Thread(target=self._process_multiple_files,
+                                 args=(mzml_files, tsv_files))
         thread.daemon = True
         thread.start()
     
-    def _process_files(self, mzml_file: str, tsv_file: str):
-        """Process mzML and TSV files (runs in background thread)"""
-        try:
-            self.status_var.set(f"Processing {Path(mzml_file).name}...")
-            
-            base_name = Path(mzml_file).stem
-            self.current_file = base_name
-            
-            # 1. Process mzML file to spectrum pickle
-            spectrum_pkl = self.data_dir / f"{base_name}_spectrum_data.pkl"
-            
-            if not spectrum_pkl.exists():
-                self.status_var.set("Extracting spectra from mzML...")
-                self._run_script('process_mzml_file.py', 
-                               ['--mzml', mzml_file,
-                                '--output_pickle', str(spectrum_pkl),
-                                '--round_up_to', '2'])
-            
-            # Load spectrum data to get mz_dict and rt_dict
-            with open(spectrum_pkl, 'rb') as f:
-                spectrum_data = pickle.load(f)
-            
-            self.spectrum_data[base_name] = spectrum_data
-            mz_dict = spectrum_data['mz_dict']
-            rt_dict = spectrum_data['rt_dict']
-            
-            # 2. Create heatmap image
-            heatmap_png = self.data_dir / f"{base_name}_heatmap.png"
-            if not heatmap_png.exists():
-                self.status_var.set("Generating heatmap image...")
-                self._run_script('create_heatmap_image_hdf5.py',
-                               ['--spectrum_pkl', str(spectrum_pkl),
-                                '--output_png', str(heatmap_png),
-                                '--log_scale', 'True',
-                                '--scale_colors', 'True',
-                                '--row_batch_size', '10'])
-            
-            # 3. Extract features from TSV
-            feature_pkl = self.data_dir / f"{base_name}_feature_data.pkl"
-            feature_json = self.data_dir / f"{base_name}_feature_data.json"
-            if not feature_pkl.exists():
-                self.status_var.set("Extracting features...")
-                self._run_script('extract_feature_data.py',
-                               ['--tsv', tsv_file,
-                                '--output_pkl', str(feature_pkl),
-                                '--output_json', str(feature_json),
-                                '--round_up_to', '2',
-                                '--feature_mode', 'CoM',
-                                '--generate_diagnostic', 'False'])
-            
-            # Load feature data
-            self.status_var.set("Loading visualization data...")
-            with open(feature_pkl, 'rb') as f:
-                features = pickle.load(f)
-            
-            # Map features to pixel coordinates for display
-            mapped_features = self._map_features_to_pixels(features, mz_dict, rt_dict)
-            
-            self.feature_data[base_name] = mapped_features
-            self.heatmap_files[base_name] = str(heatmap_png)
-            
-            # Display on main thread
-            self.root.after(0, self._display_heatmap, 
-                          str(heatmap_png), mz_dict, rt_dict, mapped_features)
-            
-        except Exception as e:
-            import traceback
-            error_msg = f"Error processing files: {str(e)}\n{traceback.format_exc()}"
-            print(error_msg)
-            self.root.after(0, messagebox.showerror, "Error", str(e))
-            self.status_var.set("Error - see dialog")
+    def _process_multiple_files(self, mzml_files: tuple, tsv_files: tuple):
+        """Process multiple mzML and TSV file pairs (runs in background thread)"""
+        total_files = len(mzml_files)
+        
+        for idx, (mzml_file, tsv_file) in enumerate(zip(mzml_files, tsv_files), 1):
+            try:
+                self.status_var.set(f"Processing file {idx}/{total_files}: {Path(mzml_file).name}...")
+                self._process_single_file(mzml_file, tsv_file)
+            except Exception as e:
+                import traceback
+                error_msg = f"Error processing {Path(mzml_file).name}: {str(e)}\n{traceback.format_exc()}"
+                print(error_msg)
+                self.root.after(0, messagebox.showerror, "Error", 
+                              f"Failed to process {Path(mzml_file).name}:\n{str(e)}")
+        
+        # Update UI on main thread
+        self.root.after(0, self._update_file_selectors)
+        self.status_var.set(f"Loaded {total_files} file(s)")
+    
+    def _process_single_file(self, mzml_file: str, tsv_file: str):
+        """Process a single mzML and TSV file pair"""
+        base_name = Path(mzml_file).stem
+        
+        # 1. Process mzML file to spectrum pickle
+        spectrum_pkl = self.data_dir / f"{base_name}_spectrum_data.pkl"
+        
+        if not spectrum_pkl.exists():
+            self._run_script('process_mzml_file.py', 
+                           ['--mzml', mzml_file,
+                            '--output_pickle', str(spectrum_pkl),
+                            '--round_up_to', '2'])
+        
+        # Load spectrum data to get mz_dict and rt_dict
+        with open(spectrum_pkl, 'rb') as f:
+            spectrum_data = pickle.load(f)
+        
+        self.spectrum_data[base_name] = spectrum_data
+        mz_dict = spectrum_data['mz_dict']
+        rt_dict = spectrum_data['rt_dict']
+        
+        # 2. Create heatmap image
+        heatmap_png = self.data_dir / f"{base_name}_heatmap.png"
+        if not heatmap_png.exists():
+            self._run_script('create_heatmap_image_hdf5.py',
+                           ['--spectrum_pkl', str(spectrum_pkl),
+                            '--output_png', str(heatmap_png),
+                            '--log_scale', 'True',
+                            '--scale_colors', 'True',
+                            '--row_batch_size', '10'])
+        
+        # 3. Extract features from TSV
+        feature_pkl = self.data_dir / f"{base_name}_feature_data.pkl"
+        feature_json = self.data_dir / f"{base_name}_feature_data.json"
+        if not feature_pkl.exists():
+            self._run_script('extract_feature_data.py',
+                           ['--tsv', tsv_file,
+                            '--output_pkl', str(feature_pkl),
+                            '--output_json', str(feature_json),
+                            '--round_up_to', '2',
+                            '--feature_mode', 'CoM',
+                            '--generate_diagnostic', 'False'])
+        
+        # Load feature data
+        with open(feature_pkl, 'rb') as f:
+            features = pickle.load(f)
+        
+        # Map features to pixel coordinates for display
+        mapped_features = self._map_features_to_pixels(features, mz_dict, rt_dict)
+        
+        self.feature_data[base_name] = mapped_features
+        self.heatmap_files[base_name] = str(heatmap_png)
     
     def _map_features_to_pixels(self, features: List[Dict], mz_dict: Dict, rt_dict: Dict) -> List[Dict]:
         """Map feature coordinates to pixel indices for display"""
@@ -640,18 +670,142 @@ class UnbeQuantTkinterGUI:
         
         return mapped_features
     
-    def _display_heatmap(self, heatmap_path: str, mz_dict: Dict, rt_dict: Dict,
-                        features: List[Dict]):
-        """Display heatmap and features (runs on main thread)"""
-        try:
-            # Load heatmap
-            if self.heatmap_canvas.load_heatmap(heatmap_path, mz_dict, rt_dict):
-                # Add features
-                self.heatmap_canvas.add_features(features, color='red', alpha=0.5)
-                self.status_var.set(f"Loaded {len(features)} features")
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to display: {str(e)}")
-            self.status_var.set("Error displaying heatmap")
+    def _update_file_selectors(self):
+        """Update heatmap selector and overlay checkboxes (runs on main thread)"""
+        # Update heatmap selector dropdown
+        file_names = list(self.heatmap_files.keys())
+        self.heatmap_selector['values'] = file_names
+        
+        if file_names:
+            # Set first file as selected if nothing is selected
+            if not self.heatmap_selector.get() and file_names:
+                self.heatmap_selector.current(0)
+                self.current_file = file_names[0]
+                self._display_current_heatmap()
+        
+        # Update overlay checkboxes
+        # Clear existing checkboxes
+        for widget in self.overlay_frame.winfo_children():
+            widget.destroy()
+        self.overlay_checkboxes.clear()
+        
+        # Create checkbox for each file except the currently displayed one
+        for file_name in file_names:
+            var = tk.BooleanVar(value=False)
+            cb = ttk.Checkbutton(
+                self.overlay_frame,
+                text=file_name,
+                variable=var,
+                command=self._on_overlay_changed
+            )
+            cb.pack(side=tk.LEFT, padx=2)
+            self.overlay_checkboxes[file_name] = var
+    
+    def _on_heatmap_selected(self, event=None):
+        """Handle heatmap selection change"""
+        selected = self.heatmap_selector.get()
+        if selected and selected in self.heatmap_files:
+            self.current_file = selected
+            self._display_current_heatmap()
+    
+    def _display_current_heatmap(self):
+        """Display the currently selected heatmap with overlays"""
+        if not self.current_file or self.current_file not in self.heatmap_files:
+            return
+        
+        heatmap_path = self.heatmap_files[self.current_file]
+        spectrum_data = self.spectrum_data[self.current_file]
+        features = self.feature_data[self.current_file]
+        
+        mz_dict = spectrum_data['mz_dict']
+        rt_dict = spectrum_data['rt_dict']
+        
+        # Load and display heatmap
+        if self.heatmap_canvas.load_heatmap(heatmap_path, mz_dict, rt_dict):
+            # Clear previous features
+            self.heatmap_canvas.clear_features()
+            
+            # Add features from current file (red)
+            self.heatmap_canvas.add_features(features, color='red', alpha=0.5, is_overlay=False)
+            
+            # Add overlay features from other files
+            self._update_overlays()
+            
+            self.status_var.set(f"Displaying {self.current_file}: {len(features)} features")
+    
+    def _on_overlay_changed(self):
+        """Handle overlay checkbox changes"""
+        self._update_overlays()
+    
+    def _update_overlays(self):
+        """Update overlay features based on checkbox selections"""
+        if not self.current_file:
+            return
+        
+        # Clear existing overlays (keep main features)
+        # Get current main features
+        main_features = self.feature_data.get(self.current_file, [])
+        
+        # Clear all and re-add main features
+        self.heatmap_canvas.clear_features()
+        self.heatmap_canvas.add_features(main_features, color='red', alpha=0.5, is_overlay=False)
+        
+        # Get current heatmap's coordinate system
+        spectrum_data = self.spectrum_data[self.current_file]
+        current_mz_dict = spectrum_data['mz_dict']
+        current_rt_dict = spectrum_data['rt_dict']
+        
+        # Add overlays from checked files
+        overlay_colors = ['blue', 'green', 'orange', 'purple', 'cyan', 'magenta']
+        color_idx = 0
+        
+        for file_name, var in self.overlay_checkboxes.items():
+            if var.get() and file_name != self.current_file and file_name in self.feature_data:
+                # Get features from overlay file
+                overlay_features = self.feature_data[file_name]
+                
+                # Remap features to current heatmap's coordinate system if different
+                if file_name in self.spectrum_data:
+                    overlay_spectrum_data = self.spectrum_data[file_name]
+                    overlay_mz_dict = overlay_spectrum_data['mz_dict']
+                    overlay_rt_dict = overlay_spectrum_data['rt_dict']
+                    
+                    # If coordinate systems differ, remap
+                    if overlay_mz_dict != current_mz_dict or overlay_rt_dict != current_rt_dict:
+                        # Remap overlay features to current coordinate system
+                        remapped_features = []
+                        for feature in overlay_features:
+                            try:
+                                # Get original m/z and RT values
+                                mz_start = feature.get('mz_start', None)
+                                mz_end = feature.get('mz_end', None)
+                                rt_start = feature.get('rt_start', None)
+                                rt_end = feature.get('rt_end', None)
+                                
+                                if all(v is not None for v in [mz_start, mz_end, rt_start, rt_end]):
+                                    # Map to current heatmap's pixel coordinates
+                                    x_min = current_mz_dict.get(round(mz_start, 2), None)
+                                    x_max = current_mz_dict.get(round(mz_end, 2), None)
+                                    y_min = current_rt_dict.get(round(rt_start, 8), None)
+                                    y_max = current_rt_dict.get(round(rt_end, 8), None)
+                                    
+                                    if all(v is not None for v in [x_min, x_max, y_min, y_max]):
+                                        remapped_feature = feature.copy()
+                                        remapped_feature['x_min'] = int(x_min)
+                                        remapped_feature['x_max'] = int(x_max)
+                                        remapped_feature['y_min'] = int(y_min)
+                                        remapped_feature['y_max'] = int(y_max)
+                                        remapped_features.append(remapped_feature)
+                            except Exception as e:
+                                print(f"Warning: Could not remap overlay feature: {e}")
+                                continue
+                        
+                        overlay_features = remapped_features
+                
+                # Add overlay with distinct color
+                color = overlay_colors[color_idx % len(overlay_colors)]
+                self.heatmap_canvas.add_features(overlay_features, color=color, alpha=0.3, is_overlay=True)
+                color_idx += 1
     
     def _run_script(self, script_name: str, args: List[str]):
         """Run a bin script"""
@@ -770,7 +924,10 @@ class UnbeQuantTkinterGUI:
             "unbeQuant Interactive Feature Analysis\n"
             "Tkinter-based local GUI for large heatmap visualization\n\n"
             "Features:\n"
+            "- Load and compare multiple mzML/TSV file pairs\n"
             "- Interactive heatmap viewer with zoom/pan\n"
+            "- Switch between different heatmaps\n"
+            "- Overlay features from multiple files\n"
             "- Feature network graph visualization\n"
             "- Diagnostic plots for selected features\n\n"
             "Click on features in the heatmap to view details."

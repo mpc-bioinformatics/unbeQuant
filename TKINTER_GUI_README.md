@@ -18,9 +18,13 @@ The Tkinter GUI solves these issues by:
 ## Features
 
 ### Layout
+- **Top Control Panel**: Heatmap selector and feature overlay controls
+  - Dropdown to switch between loaded heatmaps
+  - Checkboxes to overlay features from other files
+  
 - **Left/Middle Panel**: Large interactive heatmap with zoom and pan
   - High-resolution MS1 spectra visualization
-  - Feature overlay with bounding boxes
+  - Feature overlay with bounding boxes (red for current, colors for overlays)
   - Click to select features
   - Matplotlib navigation toolbar for zoom/pan
   
@@ -37,11 +41,14 @@ The Tkinter GUI solves these issues by:
   - Feature metadata display
 
 ### Capabilities
+- **Multiple File Support**: Load and compare multiple mzML/TSV file pairs
 - **Interactive Heatmap Viewing**: Zoom, pan, and explore large heatmaps efficiently
+- **Heatmap Switching**: Switch between different loaded heatmaps via dropdown
+- **Feature Overlays**: Overlay features from multiple files on a single heatmap for comparison
 - **Feature Selection**: Click on features to view details
 - **Network Analysis**: View feature connections across multiple files
 - **Diagnostic Information**: Detailed view of individual feature characteristics
-- **Multi-file Support**: Load and compare features from multiple runs
+- **Multi-file Comparison**: Compare features from multiple runs simultaneously
 
 ## Installation
 
@@ -85,11 +92,13 @@ Or use the launcher script:
 
 2. **Load Data**:
    - Go to `File → Load mzML + TSV`
-   - Select an mzML file from your unbeQuant workflow
-   - Select the corresponding TSV features file
-   - Click OK - processing will begin automatically
+   - Select one or more mzML files (Ctrl+Click or Shift+Click for multiple)
+   - Select the corresponding TSV features files (in the same order)
+   - Click OK - processing will begin automatically for all files
 
 3. **Explore Features**:
+   - Select which heatmap to display from the dropdown at the top
+   - Check boxes to overlay features from other files
    - Use the matplotlib toolbar to zoom and pan
    - Click on feature boxes to select them
    - View network connections in the top right panel
@@ -139,13 +148,19 @@ When you load files, the GUI automatically:
 
 ### 2. Viewing Heatmaps
 
-- **Heatmap Display**: Main panel shows the MS1 intensity heatmap
-- **Zoom/Pan**: Use matplotlib toolbar:
+- **Load Multiple Files**: Use `File → Load mzML + TSV` to load one or more file pairs
+  - Select multiple mzML files (Ctrl+Click or Shift+Click)
+  - Select corresponding TSV files in the same order
+- **Heatmap Selection**: Choose which heatmap to display from the dropdown at the top
+- **Zoom and Pan**: Use matplotlib toolbar:
   - 🏠 Home - Reset view
   - ← → Pan/zoom controls
   - 🔍 Zoom to rectangle
   - 💾 Save figure
-- **Feature Boxes**: Features overlaid as red rectangles
+- **Feature Boxes**: Features from current file overlaid as red rectangles
+- **Feature Overlays**: Check boxes at the top to overlay features from other files
+  - Each overlay file uses a different color (blue, green, orange, etc.)
+  - Features are automatically mapped to the current heatmap's coordinate system
 - **Click to Select**: Click on a feature box to select it (turns yellow)
 
 ### 3. Feature Selection
