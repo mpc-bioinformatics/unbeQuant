@@ -1,0 +1,35 @@
+┌──────────────────────────────────────────────────────────────────────────────────────┐
+│ unbeQuant - Interactive Feature Analysis (Tkinter)                                   │
+├──────────────────────────────────────────────────────────────────────────────────────┤
+│ File | View | Help                                                                   │
+├──────────────────────────────────────────────────────────────────────────────────────┤
+│ Select Heatmap: [File1_sample ▼] | Feature Overlays: ☐ File2  ☑ File3  ☐ File4     │
+├──────────────────────────────────┬──────────────────────────────────────────────────┤
+│                                   │  Feature Network Graph                            │
+│   HEATMAP DISPLAY                 │  ┌────────────────────────────────────────┐     │
+│   ┌────────────────────────┐      │  │                                        │     │
+│   │                        │      │  │    ●─────●                             │     │
+│   │  MS1 Intensity Map     │      │  │    │     │                             │     │
+│   │                        │      │  │    ●     ●────●                        │     │
+│   │  [Red boxes: File1]    │      │  │          │                             │     │
+│   │  [Blue boxes: File3]   │      │  │          ●                             │     │
+│   │                        │      │  │                                        │     │
+│   │  Click to select ▶     │      │  └────────────────────────────────────────┘     │
+│   │                        │      │                                                  │
+│   │  [Zoom/Pan toolbar]    │      ├──────────────────────────────────────────────────┤
+│   │  🏠 ← → 🔍 💾          │      │  Diagnostic Plot                                 │
+│   └────────────────────────┘      │  ┌────────────────────────────────────────┐     │
+│                                   │  │   ┌─────────────────┐                  │     │
+│   Legend:                         │  │   │     Feature     │                  │     │
+│   ■ Red    = Current file         │  │   │   Bounding Box  │                  │     │
+│   ■ Blue   = File2 overlay        │  │   │                 │                  │     │
+│   ■ Green  = File3 overlay        │  │   └─────────────────┘                  │     │
+│   ■ Orange = File4 overlay        │  │         ● Geo center                   │     │
+│                                   │  │         ✕ Weighted center              │     │
+│                                   │  └────────────────────────────────────────┘     │
+└──────────────────────────────────┴──────────────────────────────────────────────────┘
+ Status: Displaying File1_sample: 1234 features | Overlays: File3 (567 features)
+
+NEW FEATURES:
+✓ Multi-file support: Load multiple mzML+TSV pairs simultaneously
+✓ Heatmap selector: Dropdown to switch between loaded files
