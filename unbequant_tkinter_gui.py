@@ -526,9 +526,20 @@ class UnbeQuantTkinterGUI:
     
     def load_files(self):
         """Load multiple mzML and TSV files"""
+        # Show instructions for multi-file selection
+        response = messagebox.showinfo(
+            "Multi-File Selection",
+            "You can load one or multiple file pairs.\n\n"
+            "How to select multiple files:\n"
+            "• Windows/Linux: Hold Ctrl and click files\n"
+            "• Mac: Hold Cmd and click files\n"
+            "• For range: Hold Shift and click first and last file\n\n"
+            "You will select mzML files first, then TSV files in the same order."
+        )
+        
         # Ask for mzML files (multiple selection)
         mzml_files = filedialog.askopenfilenames(
-            title="Select one or more mzML files",
+            title="Select one or more mzML files (Ctrl+Click or Cmd+Click for multiple)",
             filetypes=[("mzML files", "*.mzML"), ("All files", "*.*")]
         )
         
@@ -537,7 +548,7 @@ class UnbeQuantTkinterGUI:
         
         # Ask for TSV files (multiple selection, same count as mzML)
         tsv_files = filedialog.askopenfilenames(
-            title=f"Select {len(mzml_files)} corresponding TSV features files (in same order)",
+            title=f"Select {len(mzml_files)} corresponding TSV files in same order (Ctrl+Click or Cmd+Click)",
             filetypes=[("TSV files", "*.tsv"), ("All files", "*.*")]
         )
         
