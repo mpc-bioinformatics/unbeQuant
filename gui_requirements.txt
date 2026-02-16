@@ -1,7 +1,14 @@
 # GUI Requirements for unbeQuant
+
+# Web-based GUI (Dash) - original implementation
 dash>=2.14.0
 dash-bootstrap-components>=1.5.0
 plotly>=5.17.0
+
+# Tkinter GUI - new implementation for large heatmaps
+matplotlib>=3.7.0
+
+# Common requirements for both GUIs
 pandas>=2.0.0
 numpy>=1.26.4
 Pillow>=10.0.0
