@@ -526,46 +526,94 @@ class UnbeQuantTkinterGUI:
     
     def load_files(self):
         """Load multiple mzML and TSV files"""
-        # Show instructions for multi-file selection
-        response = messagebox.showinfo(
-            "Multi-File Selection",
-            "You can load one or multiple file pairs.\n\n"
-            "How to select multiple files:\n"
-            "• Windows/Linux: Hold Ctrl and click files\n"
-            "• Mac: Hold Cmd and click files\n"
-            "• For range: Hold Shift and click first and last file\n\n"
-            "You will select mzML files first, then TSV files in the same order."
-        )
+        # Ask user how many files they want to load
+        num_files_dialog = tk.Toplevel(self.root)
+        num_files_dialog.title("Load Files")
+        num_files_dialog.geometry("400x200")
+        num_files_dialog.transient(self.root)
+        num_files_dialog.grab_set()
         
-        # Ask for mzML files (multiple selection)
-        mzml_files = filedialog.askopenfilenames(
-            title="Select one or more mzML files (Ctrl+Click or Cmd+Click for multiple)",
-            filetypes=[("mzML files", "*.mzML"), ("All files", "*.*")]
-        )
+        ttk.Label(
+            num_files_dialog,
+            text="How many mzML+TSV file pairs do you want to load?",
+            wraplength=350
+        ).pack(pady=20)
         
-        if not mzml_files:
+        num_files_var = tk.IntVar(value=1)
+        
+        frame = ttk.Frame(num_files_dialog)
+        frame.pack(pady=10)
+        
+        ttk.Label(frame, text="Number of file pairs:").pack(side=tk.LEFT, padx=5)
+        spinbox = ttk.Spinbox(frame, from_=1, to=10, textvariable=num_files_var, width=10)
+        spinbox.pack(side=tk.LEFT, padx=5)
+        
+        result = {'confirmed': False}
+        
+        def on_ok():
+            result['confirmed'] = True
+            num_files_dialog.destroy()
+        
+        def on_cancel():
+            num_files_dialog.destroy()
+        
+        btn_frame = ttk.Frame(num_files_dialog)
+        btn_frame.pack(pady=20)
+        ttk.Button(btn_frame, text="OK", command=on_ok).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Cancel", command=on_cancel).pack(side=tk.LEFT, padx=5)
+        
+        # Wait for dialog to close
+        self.root.wait_window(num_files_dialog)
+        
+        if not result['confirmed']:
             return
         
-        # Ask for TSV files (multiple selection, same count as mzML)
-        tsv_files = filedialog.askopenfilenames(
-            title=f"Select {len(mzml_files)} corresponding TSV files in same order (Ctrl+Click or Cmd+Click)",
-            filetypes=[("TSV files", "*.tsv"), ("All files", "*.*")]
-        )
+        num_files = num_files_var.get()
         
-        if not tsv_files:
-            return
+        # Collect files one by one
+        mzml_files = []
+        tsv_files = []
         
-        if len(mzml_files) != len(tsv_files):
-            messagebox.showerror(
-                "File Count Mismatch",
-                f"Number of mzML files ({len(mzml_files)}) must match "
-                f"number of TSV files ({len(tsv_files)})"
+        for i in range(num_files):
+            # Ask for mzML file
+            mzml_file = filedialog.askopenfilename(
+                title=f"Select mzML file {i+1} of {num_files}",
+                filetypes=[("mzML files", "*.mzML"), ("All files", "*.*")]
             )
+            
+            if not mzml_file:
+                if i == 0:
+                    return  # User cancelled on first file
+                else:
+                    messagebox.showwarning(
+                        "Incomplete Selection",
+                        f"Only {i} file pair(s) will be loaded."
+                    )
+                    break
+            
+            mzml_files.append(mzml_file)
+            
+            # Ask for corresponding TSV file
+            tsv_file = filedialog.askopenfilename(
+                title=f"Select TSV file {i+1} of {num_files} (for {Path(mzml_file).name})",
+                filetypes=[("TSV files", "*.tsv"), ("All files", "*.*")]
+            )
+            
+            if not tsv_file:
+                messagebox.showerror(
+                    "Missing TSV",
+                    f"TSV file required for {Path(mzml_file).name}"
+                )
+                return
+            
+            tsv_files.append(tsv_file)
+        
+        if not mzml_files or not tsv_files:
             return
         
         # Process all files in background thread
         thread = threading.Thread(target=self._process_multiple_files,
-                                 args=(mzml_files, tsv_files))
+                                 args=(tuple(mzml_files), tuple(tsv_files)))
         thread.daemon = True
         thread.start()
     

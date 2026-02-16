@@ -92,15 +92,14 @@ Or use the launcher script:
 
 2. **Load Data**:
    - Go to `File → Load mzML + TSV Files...`
-   - A dialog will explain how to select multiple files
-   - **For multiple files**: Hold Ctrl (Windows/Linux) or Cmd (Mac) and click each file
-   - **For range selection**: Hold Shift and click first and last file
-   - Select one or more mzML files
-   - Select the corresponding TSV features files (in the same order)
-   - Click OK - processing will begin automatically for all files
+   - A dialog will ask how many file pairs you want to load
+   - Enter the number (1-10) and click OK
+   - For each file pair, you will:
+     1. Select the mzML file
+     2. Select the corresponding TSV file
+   - Files are processed automatically after all selections complete
    
-   **Note**: The file dialog supports multiple file selection using standard OS shortcuts.
-   Single file selection also works - just click one file.
+   **Note**: Files are selected one at a time in sequence, making it easy to load multiple pairs.
 
 3. **Explore Features**:
    - Select which heatmap to display from the dropdown at the top
