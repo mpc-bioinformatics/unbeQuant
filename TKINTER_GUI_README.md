@@ -59,10 +59,15 @@ pip install -r gui_requirements.txt
 
 Key dependencies for Tkinter GUI:
 - **matplotlib** - For interactive heatmap rendering and plots
-- **networkx** - For network graph visualization
+- **graphviz** - For network graph visualization (matching build_network_graph.py)
 - **Pillow** - For image loading
 - **numpy, pandas** - For data processing
 - **tkinter** - Usually included with Python
+
+**Note**: graphviz also requires the Graphviz system package:
+- Ubuntu/Debian: `sudo apt-get install graphviz`
+- macOS: `brew install graphviz`
+- Windows: Download from https://graphviz.org/download/
 
 ## Usage
 
@@ -290,14 +295,14 @@ Potential improvements:
 ### Architecture
 - **GUI Framework**: Tkinter (Python's standard GUI library)
 - **Visualization**: Matplotlib with TkAgg backend
-- **Network Graphs**: NetworkX with matplotlib rendering
+- **Network Graphs**: Graphviz (matching build_network_graph.py implementation)
 - **Image Handling**: PIL/Pillow
 - **Data Processing**: NumPy, Pandas
 
 ### Why This Stack?
 - **Tkinter**: Built-in, no installation needed, cross-platform
 - **Matplotlib**: Excellent for scientific visualization, handles large images
-- **NetworkX**: Standard Python graph library, easy to use
+- **Graphviz**: Professional graph visualization library, same as bin/build_network_graph.py
 - **Native Performance**: No browser overhead, direct OS rendering
 
 ### Thread Safety

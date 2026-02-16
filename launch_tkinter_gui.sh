@@ -28,6 +28,26 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
+# Check for graphviz system package
+if ! command -v dot &> /dev/null; then
+    echo "Warning: graphviz system package not found."
+    echo "Network graphs will not work without it."
+    echo "On Ubuntu/Debian: sudo apt-get install graphviz"
+    echo "On macOS: brew install graphviz"
+    echo "On Windows: download from https://graphviz.org/download/"
+    echo ""
+    echo "Continuing anyway..."
+fi
+
+# Check for graphviz Python package
+python3 -c "import graphviz" 2>/dev/null
+if [ $? -ne 0 ]; then
+    echo "Warning: graphviz Python package not found."
+    echo "Install with: pip install graphviz"
+    echo ""
+    echo "Continuing anyway..."
+fi
+
 # Set matplotlib backend for tkinter
 export MPLBACKEND=TkAgg
 

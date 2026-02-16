@@ -7,6 +7,7 @@ plotly>=5.17.0
 
 # Tkinter GUI - new implementation for large heatmaps
 matplotlib>=3.7.0
+graphviz>=0.20.0
 
 # Common requirements for both GUIs
 pandas>=2.0.0

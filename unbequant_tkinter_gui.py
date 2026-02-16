@@ -5,7 +5,7 @@ Local executable using tkinter to avoid HTML limitations with large files (+150M
 
 Layout:
 - Left/Middle: Large interactive heatmap with zoom/pan
-- Right Top: Feature network graph
+- Right Top: Feature network graph (using graphviz)
 - Right Bottom: Diagnostic plot for selected feature
 """
 
@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 import subprocess
 import threading
+import tempfile
 
 import numpy as np
 import pandas as pd
@@ -30,7 +31,6 @@ from matplotlib.figure import Figure
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.patches import Rectangle
-import networkx as nx
 
 # Add bin to path for importing modules
 BIN_DIR = Path(__file__).parent / 'bin'
@@ -174,39 +174,60 @@ class HeatmapCanvas:
 
 
 class NetworkGraphPanel:
-    """Network graph visualization panel"""
+    """Network graph visualization panel using graphviz"""
     
     def __init__(self, parent):
         """Initialize the network graph panel"""
         self.parent = parent
         
-        # Create matplotlib figure
-        self.figure = Figure(figsize=(6, 5), dpi=80)
-        self.ax = self.figure.add_subplot(111)
+        # Create frame with canvas for displaying graphviz output
+        self.canvas_frame = ttk.Frame(parent)
+        self.canvas_frame.pack(fill=tk.BOTH, expand=True)
         
-        # Create canvas
-        self.canvas = FigureCanvasTkAgg(self.figure, master=parent)
-        self.canvas.draw()
-        self.canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        # Label for status
+        self.status_label = ttk.Label(self.canvas_frame, text="No feature selected")
+        self.status_label.pack(pady=10)
         
-        self.graph = None
+        # Canvas for image display
+        self.canvas = tk.Canvas(self.canvas_frame, bg='white')
+        self.canvas.pack(fill=tk.BOTH, expand=True)
+        
+        # Scrollbars
+        self.h_scrollbar = ttk.Scrollbar(self.canvas_frame, orient=tk.HORIZONTAL, command=self.canvas.xview)
+        self.v_scrollbar = ttk.Scrollbar(self.canvas_frame, orient=tk.VERTICAL, command=self.canvas.yview)
+        self.canvas.configure(xscrollcommand=self.h_scrollbar.set, yscrollcommand=self.v_scrollbar.set)
+        
         self.selected_feature = None
+        self.current_image = None
+        
+        # Check if graphviz is available
+        try:
+            import graphviz
+            self.graphviz_available = True
+        except ImportError:
+            self.graphviz_available = False
+            self.status_label.config(text="graphviz not installed (pip install graphviz)")
     
     def display_network(self, selected_feature: Dict, all_features: List[Dict], 
-                       edges: List[Dict]):
-        """Display network graph for a selected feature"""
+                       edges: List[Dict], temp_dir: Path):
+        """Display network graph for a selected feature using graphviz"""
         try:
-            self.ax.clear()
+            if not self.graphviz_available:
+                self.status_label.config(text="graphviz not available - cannot render network")
+                return
+            
+            import graphviz
+            
             self.selected_feature = selected_feature
+            self.status_label.config(text=f"Building network for feature {selected_feature.get('idx', 'N/A')}...")
             
-            # Build subgraph around selected feature
-            G = nx.Graph()
-            
-            # Find connected features
+            # Find connected features (subgraph extraction)
             selected_key = (selected_feature.get('filename', 'current'), 
                           selected_feature.get('idx', selected_feature.get('feature_idx', 0)))
             
             connected_nodes = set([selected_key])
+            connected_edges = []
+            
             for edge in edges:
                 # Handle different edge formats
                 if 'file1' in edge:
@@ -221,45 +242,100 @@ class NetworkGraphPanel:
                 if node1 == selected_key or node2 == selected_key:
                     connected_nodes.add(node1)
                     connected_nodes.add(node2)
-                    G.add_edge(node1, node2, weight=edge.get('distance', 1.0))
+                    connected_edges.append((node1, node2, edge.get('distance', 1.0)))
             
-            if len(G.nodes()) == 0:
-                self.ax.text(0.5, 0.5, 'No connections found\nfor selected feature',
-                           ha='center', va='center', fontsize=12)
-                self.canvas.draw()
+            if len(connected_nodes) == 1:
+                self.status_label.config(text='No connections found for selected feature')
+                self.canvas.delete("all")
                 return
             
-            # Layout
-            pos = nx.spring_layout(G, k=1, iterations=50)
+            # Create graphviz graph
+            dot = graphviz.Digraph(comment='Feature Network', format='png')
+            dot.attr(rankdir='LR', splines='polyline', overlap='false', sep='+0.3')
+            dot.attr('node', shape='circle', style='filled', fontsize='10')
             
-            # Node colors
-            node_colors = []
-            for node in G.nodes():
+            # Generate colors for different files
+            unique_files = sorted(set(f for f, _ in connected_nodes))
+            file_colors = self._get_file_colors(unique_files)
+            
+            # Add nodes
+            for node in connected_nodes:
+                filename, feature_idx = node
+                label = f"{Path(filename).stem}\n#{feature_idx}"
+                
+                # Color: red for selected, file-specific color for others
                 if node == selected_key:
-                    node_colors.append('red')
+                    color = '#FF0000'  # Red for selected
                 else:
-                    node_colors.append('lightblue')
+                    color = file_colors.get(filename, '#87CEEB')
+                
+                dot.node(str(node), label=label, color=color, fillcolor=color)
             
-            # Draw
-            nx.draw_networkx_nodes(G, pos, node_color=node_colors, 
-                                 node_size=500, alpha=0.8, ax=self.ax)
-            nx.draw_networkx_edges(G, pos, width=1, alpha=0.5, ax=self.ax)
+            # Add edges
+            for node1, node2, distance in connected_edges:
+                edge_label = f"{distance:.3f}"
+                dot.edge(str(node1), str(node2), label=edge_label, fontsize='8')
             
-            # Labels
-            labels = {node: f"{Path(node[0]).stem}\n#{node[1]}" for node in G.nodes()}
-            nx.draw_networkx_labels(G, pos, labels, font_size=8, ax=self.ax)
+            # Render to temporary file
+            output_path = temp_dir / f"network_graph_{selected_key[1]}"
+            dot.render(output_path, cleanup=True)
             
-            self.ax.set_title(f'Feature Network (Selected: {selected_key[1]})', 
-                            fontsize=10)
-            self.ax.axis('off')
-            
-            self.canvas.draw()
+            # Load and display the image
+            png_path = f"{output_path}.png"
+            if Path(png_path).exists():
+                img = Image.open(png_path)
+                
+                # Resize if too large
+                max_size = 800
+                if img.width > max_size or img.height > max_size:
+                    img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
+                
+                self.current_image = ImageTk.PhotoImage(img)
+                
+                # Display on canvas
+                self.canvas.delete("all")
+                self.canvas.create_image(0, 0, anchor=tk.NW, image=self.current_image)
+                self.canvas.config(scrollregion=self.canvas.bbox("all"))
+                
+                self.status_label.config(
+                    text=f"Feature Network: {len(connected_nodes)} nodes, {len(connected_edges)} edges"
+                )
+                
+                # Clean up temp file
+                try:
+                    Path(png_path).unlink()
+                except:
+                    pass
+            else:
+                self.status_label.config(text="Failed to render network graph")
             
         except Exception as e:
-            self.ax.clear()
-            self.ax.text(0.5, 0.5, f'Error displaying network:\n{str(e)}',
-                       ha='center', va='center', fontsize=10)
-            self.canvas.draw()
+            import traceback
+            print(f"Error displaying network: {traceback.format_exc()}")
+            self.status_label.config(text=f'Error: {str(e)}')
+            self.canvas.delete("all")
+    
+    def _get_file_colors(self, filenames: List[str]) -> Dict[str, str]:
+        """Generate distinct colors for each file (matching build_network_graph.py)"""
+        palette = [
+            '#FF6B6B',  # Red
+            '#4ECDC4',  # Teal
+            '#45B7D1',  # Blue
+            '#FFA07A',  # Light Salmon
+            '#98D8C8',  # Mint
+            '#F7DC6F',  # Yellow
+            '#BB8FCE',  # Purple
+            '#85C1E2',  # Sky Blue
+            '#F8B88B',  # Peach
+            '#AED6F1',  # Light Blue
+        ]
+        
+        colors = {}
+        for idx, filename in enumerate(sorted(set(filenames))):
+            color_idx = idx % len(palette)
+            colors[filename] = palette[color_idx]
+        
+        return colors
 
 
 class DiagnosticPanel:
@@ -349,6 +425,10 @@ class UnbeQuantTkinterGUI:
         
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(exist_ok=True)
+        
+        # Create temp directory for graphviz outputs
+        self.temp_dir = self.data_dir / "temp"
+        self.temp_dir.mkdir(exist_ok=True)
         
         # Data storage
         self.heatmap_files = {}
@@ -597,7 +677,7 @@ class UnbeQuantTkinterGUI:
                 all_features.extend(features_list)
             
             self.network_panel.display_network(feature, all_features, 
-                                              self.paired_edges)
+                                              self.paired_edges, self.temp_dir)
         else:
             # Try to load edges if multiple files exist
             if len(self.feature_data) > 1:
