@@ -1,0 +1,149 @@
+╔══════════════════════════════════════════════════════════════════════════════╗
+║              NEW FILE SELECTION WORKFLOW - ONE AT A TIME                      ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+STEP 1: User clicks "File → Load mzML + TSV Files..."
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  ┌────────────────────────────────────────────────────────────────────────┐  │
+│  │  Load Files                                                             │  │
+│  ├────────────────────────────────────────────────────────────────────────┤  │
+│  │                                                                         │  │
+│  │  How many mzML+TSV file pairs do you want to load?                     │  │
+│  │                                                                         │  │
+│  │                                                                         │  │
+│  │         Number of file pairs:  [ 3 ▲▼ ]                                │  │
+│  │                                                                         │  │
+│  │                                                                         │  │
+│  │                      [ OK ]        [ Cancel ]                           │  │
+│  │                                                                         │  │
+│  └────────────────────────────────────────────────────────────────────────┘  │
+│                                                                               │
+│  USER SELECTS: 3 file pairs                                                  │
+└───────────────────────────────────────────────────────────────────────────────┘
+
+STEP 2: Select first mzML file
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  ┌────────────────────────────────────────────────────────────────────────┐  │
+│  │  Select mzML file 1 of 3                                                │  │
+│  ├────────────────────────────────────────────────────────────────────────┤  │
+│  │                                                                         │  │
+│  │  □ file1_sample.mzML                                                    │  │
+│  │  ☑ file2_sample.mzML      ← Click to select                            │  │
+│  │  □ file3_sample.mzML                                                    │  │
+│  │  □ file4_sample.mzML                                                    │  │
+│  │                                                                         │  │
+│  │  File: "file2_sample.mzML"                                             │  │
+│  │                                                                         │  │
+│  │                          [ Open ]  [ Cancel ]                           │  │
+│  └────────────────────────────────────────────────────────────────────────┘  │
+│                                                                               │
+│  USER SELECTED: file2_sample.mzML                                            │
+└───────────────────────────────────────────────────────────────────────────────┘
+
+STEP 3: Select first TSV file (matching mzML)
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  ┌────────────────────────────────────────────────────────────────────────┐  │
+│  │  Select TSV file 1 of 3 (for file2_sample.mzML)                        │  │
+│  ├────────────────────────────────────────────────────────────────────────┤  │
+│  │                                                                         │  │
+│  │  □ file1_features.tsv                                                   │  │
+│  │  ☑ file2_features.tsv     ← Click to select matching TSV               │  │
+│  │  □ file3_features.tsv                                                   │  │
+│  │  □ file4_features.tsv                                                   │  │
+│  │                                                                         │  │
+│  │  File: "file2_features.tsv"                                            │  │
+│  │                                                                         │  │
+│  │                          [ Open ]  [ Cancel ]                           │  │
+│  └────────────────────────────────────────────────────────────────────────┘  │
+│                                                                               │
+│  USER SELECTED: file2_features.tsv                                           │
+└───────────────────────────────────────────────────────────────────────────────┘
+
+STEP 4: Select second mzML file
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  ┌────────────────────────────────────────────────────────────────────────┐  │
+│  │  Select mzML file 2 of 3                                                │  │
+│  ├────────────────────────────────────────────────────────────────────────┤  │
+│  │                                                                         │  │
+│  │  □ file1_sample.mzML                                                    │  │
+│  │  □ file2_sample.mzML      (already selected)                           │  │
+│  │  ☑ file3_sample.mzML      ← Click to select                            │  │
+│  │  □ file4_sample.mzML                                                    │  │
+│  │                                                                         │  │
+│  │  File: "file3_sample.mzML"                                             │  │
+│  │                                                                         │  │
+│  │                          [ Open ]  [ Cancel ]                           │  │
+│  └────────────────────────────────────────────────────────────────────────┘  │
+│                                                                               │
+│  USER SELECTED: file3_sample.mzML                                            │
+└───────────────────────────────────────────────────────────────────────────────┘
+
+STEP 5: Select second TSV file
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  ┌────────────────────────────────────────────────────────────────────────┐  │
+│  │  Select TSV file 2 of 3 (for file3_sample.mzML)                        │  │
+│  ├────────────────────────────────────────────────────────────────────────┤  │
+│  │                                                                         │  │
+│  │  □ file1_features.tsv                                                   │  │
+│  │  □ file2_features.tsv     (already selected)                           │  │
+│  │  ☑ file3_features.tsv     ← Click to select matching TSV               │  │
+│  │  □ file4_features.tsv                                                   │  │
+│  │                                                                         │  │
+│  │  File: "file3_features.tsv"                                            │  │
+│  │                                                                         │  │
+│  │                          [ Open ]  [ Cancel ]                           │  │
+│  └────────────────────────────────────────────────────────────────────────┘  │
+│                                                                               │
+│  USER SELECTED: file3_features.tsv                                           │
+└───────────────────────────────────────────────────────────────────────────────┘
+
+... (continues for 3rd pair) ...
+
+FINAL: Processing begins
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  Status: Processing file 1/3: file2_sample.mzML...                           │
+│  Status: Processing file 2/3: file3_sample.mzML...                           │
+│  Status: Processing file 3/3: file4_sample.mzML...                           │
+│  Status: Loaded 3 file(s)                                                    │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+GUI displays with all files loaded
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ Select Heatmap: [file2_sample ▼] | Overlays: ☑ file3  ☑ file4              │
+├─────────────────────────┬────────────────────────────────────────────────────┤
+│  Heatmap Display        │  Network Graph                                     │
+│  [Red: file2]           │                                                    │
+│  [Blue: file3 overlay]  │  Diagnostic Plot                                   │
+│  [Green: file4 overlay] │                                                    │
+└─────────────────────────┴────────────────────────────────────────────────────┘
+
+═══════════════════════════════════════════════════════════════════════════════
+WHY THIS APPROACH WORKS BETTER
+═══════════════════════════════════════════════════════════════════════════════
+
+✓ No need for Ctrl+Click or Cmd+Click shortcuts
+✓ Files selected one at a time - clear and simple
+✓ User specifies how many files upfront
+✓ Progress shown in dialog titles (file X of Y)
+✓ Each TSV paired immediately with its mzML
+✓ Works on ALL platforms consistently
+✓ No confusion about multi-select capability
+✓ Users can't select wrong number of files
+✓ Clear feedback at each step
+
+═══════════════════════════════════════════════════════════════════════════════
+TECHNICAL IMPLEMENTATION
+═══════════════════════════════════════════════════════════════════════════════
+
+Old approach (problematic):
+  filedialog.askopenfilenames()  # Requires Ctrl+Click knowledge
+
+New approach (bulletproof):
+  for i in range(num_files):
+      mzml = filedialog.askopenfilename()  # One at a time
+      tsv = filedialog.askopenfilename()   # Paired immediately
+
+✓ Uses standard single-file dialog (works everywhere)
+✓ Loop ensures correct pairing
+✓ User controls number of iterations
+✓ No platform-specific behavior issues
