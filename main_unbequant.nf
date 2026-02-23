@@ -2,12 +2,38 @@
 nextflow.enable.dsl=2
 
 // Required Parameters (Input-Files)
-params.main_fasta_file = "/workspaces/unbeQuant/files/UP000005640_9606.fasta" // The FASTA file of the species to be searched (downloadable from UniProtKB)
+params.main_fasta_file = "/workspaces/unbeQuant/files/UP000000589_10090.fasta" // The FASTA file of the species to be searched (downloadable from UniProtKB)
 params.main_raw_files_folder = "/workspaces/unbeQuant/files/raws"  // The folder where the RAW/.d-files are located.
 params.main_comet_params = "/workspaces/unbeQuant/example_configurations/comet_config.txt"  // The comet parameter file for search. NOTE: Here the digestion should be explicitly turned on (or set appropiately, depending on the input FASTA.)).
 
 // Optional Parameters
-// See each nextflow script.
+// See each nextflow script for detailed parameter documentation.
+//
+// Feature Pairing Parameters (map_mzml_features):
+//   --mmf_optimize_pairing: Use optimized KD-tree pairing (default: true) or basic pairing
+//   --mmf_best_match_only: Keep only best match for each feature pair (default: false)
+//   --mmf_match_cutoff: Minimum match score cutoff 0.0-1.0 (default: 0.0)
+//   --mmf_mz_cutoff: Maximum m/z coordinate difference for filtering (uses original coordinates when set)
+//   --mmf_rt_cutoff: Maximum RT coordinate difference for filtering (uses original coordinates when set)
+//   --mmf_edges_cutoff: Maximum euclidean distance cutoff for filtering (uses scaled coordinates)
+//   --mmf_normalize_coordinates: Enable/disable coordinate normalization before KD-tree
+//                               (null=auto: OFF for mz/rt cutoff, ON for euclidean cutoff)
+//   --mmf_distance_calc_before_scaling: Calculate distance before coordinate scaling (default: false)
+//   --mmf_normalize_edge_distances: Normalize edge distances to [0, 1] range for visualization (default: false)
+//   --mmf_skip_json_output: Skip JSON serialization for speed (default: false - JSON enabled by default)
+//   --mmf_analyze_pep_idents: Perform detailed pep_ident matching analysis (default: true - enabled by default)
+//   --mmf_generate_html_report: Generate HTML pairing report (default: true)
+//   --mmf_build_network_graph: Build and analyze network graph composition (default: false)
+//
+// Example usages:
+//   With coordinate-based filtering:
+//     nextflow run main_unbequant.nf --mmf_mz_cutoff 0.1 --mmf_rt_cutoff 0.2
+//
+//   With euclidean distance filtering:
+//     nextflow run main_unbequant.nf --mmf_edges_cutoff 0.5
+//
+//   With manual coordinate normalization override:
+//     nextflow run main_unbequant.nf --mmf_normalize_coordinates false --mmf_edges_cutoff 0.5
 
 // Output Parameters which are fixed for the folder structure.
 // NOTE: these can be changed and also individually turned off. See for the corresponding nextflow scripts
@@ -85,8 +111,12 @@ workflow main_unbequant {
             final_grouped_results
         )
         // Map mzML features with identification data
-        mzml_files = Channel.fromPath(params.ctm_outdir + "/*.mzML")
-        tsv_files = Channel.fromPath(params.map_alignment_features_tsv_dir + "/*.tsv")
+        mzml_files = convert_to_mzml.out.collect().flatten()
+        tsv_files = quantify_and_align.out[1]
+            .map { fdr, consensus_xml, feature_tsvs -> feature_tsvs }
+            .collect()
+            .flatten()
         
+        // Capture subworkflow outputs to enable proper caching with -resume
         map_mzml_features(mzml_files, tsv_files)
 }

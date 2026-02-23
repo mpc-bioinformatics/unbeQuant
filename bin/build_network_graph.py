@@ -47,15 +47,15 @@ def load_edges_from_paired_features(paired_features_file: str) -> List[Dict]:
         if 'network_edges' in data and 'cutoff_params' in data:
             # Wrapped format with cutoff parameters from --skip-matchfinder output
             network_edges = data['network_edges']
-            if all(isinstance(k, int) and isinstance(v, list) for k, v in network_edges.items()):
-                # Dictionary format: flatten all edges
+            if all(isinstance(v, list) for v in network_edges.values()):
+                # Dictionary format: flatten all edges (keys can be int or str)
                 for file_idx, file_edges in network_edges.items():
                     edges.extend(file_edges)
             else:
                 edges = network_edges
-        # Check if it's the edges dictionary format {file_idx: [edges]}
-        elif all(isinstance(k, int) and isinstance(v, list) for k, v in data.items()):
-            # Dictionary format: flatten all edges
+        # Check if it's the edges dictionary format {file_idx: [edges]} (int or str keys)
+        elif all(isinstance(v, list) for v in data.values()):
+            # Dictionary format: flatten all edges (keys can be int or str)
             for file_idx, file_edges in data.items():
                 edges.extend(file_edges)
         else:
@@ -171,16 +171,16 @@ def compute_bidirectional_map(edges: List[Dict]) -> Dict[Tuple, bool]:
 
 def sample_edges_for_testing(edges: List[Dict], fraction: float) -> List[Dict]:
     """
-    Sample interconnected edges for testing using random selection.
-    Random sampling better preserves the natural distribution of bidirectional
-    pairs compared to contiguous or interleaved sampling.
+    Sample complete feature groups (connected components) for testing.
+    Instead of randomly picking edges, this traces all connections within
+    feature groups and includes complete groups until edge budget is full.
     
     Args:
         edges: List of edge dictionaries
         fraction: Fraction of edges to keep (0.0 to 1.0)
     
     Returns:
-        Sampled list of edges
+        Sampled list of edges (complete feature groups)
     """
     if fraction <= 0.0 or fraction >= 1.0:
         if fraction >= 1.0:
@@ -190,12 +190,95 @@ def sample_edges_for_testing(edges: List[Dict], fraction: float) -> List[Dict]:
     
     target_edges = max(10, int(len(edges) * fraction))
     
-    # Random sampling with fixed seed for reproducibility
-    np.random.seed(42)
-    sampled_indices = np.random.choice(len(edges), size=target_edges, replace=False)
-    sampled_edges = [edges[i] for i in sorted(sampled_indices)]
+    # Build adjacency map: vertex -> list of edge indices
+    vertex_to_edges = {}
     
-    # Count unique vertices for reporting
+    for edge_idx, edge in enumerate(edges):
+        if 'file1' in edge:
+            v1 = (edge['file1']['filename'], edge['file1']['feature_idx'])
+            v2 = (edge['file2']['filename'], edge['file2']['feature_idx'])
+        else:
+            v1 = (edge['current_file']['filename'], edge['current_file']['feature_idx'])
+            v2 = (edge['matched_file']['filename'], edge['matched_file']['feature_idx'])
+        
+        if v1 not in vertex_to_edges:
+            vertex_to_edges[v1] = []
+        if v2 not in vertex_to_edges:
+            vertex_to_edges[v2] = []
+        
+        vertex_to_edges[v1].append(edge_idx)
+        vertex_to_edges[v2].append(edge_idx)
+    
+    # Find connected components using BFS
+    visited_vertices = set()
+    components = []  # Each component is a set of edge indices
+    
+    for start_vertex in vertex_to_edges:
+        if start_vertex in visited_vertices:
+            continue
+        
+        # BFS to find all vertices and edges in this component
+        component_edges = set()
+        queue = [start_vertex]
+        visited_vertices.add(start_vertex)
+        
+        while queue:
+            vertex = queue.pop(0)
+            
+            # Add all edges connected to this vertex
+            for edge_idx in vertex_to_edges[vertex]:
+                component_edges.add(edge_idx)
+                
+                # Find the other vertex of this edge
+                edge = edges[edge_idx]
+                if 'file1' in edge:
+                    v1 = (edge['file1']['filename'], edge['file1']['feature_idx'])
+                    v2 = (edge['file2']['filename'], edge['file2']['feature_idx'])
+                else:
+                    v1 = (edge['current_file']['filename'], edge['current_file']['feature_idx'])
+                    v2 = (edge['matched_file']['filename'], edge['matched_file']['feature_idx'])
+                
+                other_vertex = v2 if v1 == vertex else v1
+                
+                if other_vertex not in visited_vertices:
+                    visited_vertices.add(other_vertex)
+                    queue.append(other_vertex)
+        
+        components.append(component_edges)
+    
+    # Sort components by edge count (largest first) for better representation
+    components.sort(key=len, reverse=True)
+    
+    # Greedily select complete components until edge budget is full
+    selected_edges = set()
+    selected_components = 0
+    
+    for component in components:
+        if len(selected_edges) + len(component) <= target_edges:
+            # Add complete component
+            selected_edges.update(component)
+            selected_components += 1
+        elif len(selected_edges) < target_edges:
+            # Last component: only add if it would get us closer to the target
+            remaining = target_edges - len(selected_edges)
+            component_list = list(component)
+            if len(component_list) <= remaining:
+                # Component fits completely
+                selected_edges.update(component)
+                selected_components += 1
+            else:
+                # Partial fill only at the very end
+                np.random.seed(42)
+                partial = np.random.choice(len(component_list), size=remaining, replace=False)
+                selected_edges.update([component_list[i] for i in partial])
+                selected_components += 1
+            break
+        else:
+            break
+    
+    sampled_edges = [edges[i] for i in sorted(selected_edges)]
+    
+    # Count unique vertices
     vertices = set()
     for edge in sampled_edges:
         if 'file1' in edge:
@@ -207,7 +290,7 @@ def sample_edges_for_testing(edges: List[Dict], fraction: float) -> List[Dict]:
         vertices.add(v1)
         vertices.add(v2)
     
-    print(f"  Random sampling: {target_edges} edges ({len(vertices)} unique vertices)")
+    print(f"  Smart sampling: {len(sampled_edges)} edges from {selected_components} complete feature groups ({len(vertices)} unique vertices)")
     
     return sampled_edges
 
@@ -234,11 +317,11 @@ def build_network_graph(edges: List[Dict], edge_cutoff: float = float('inf'),
     
     # Filter edges based on cutoff mode
     if mz_cutoff is not None and rt_cutoff is not None:
-        # Coordinate-based filtering overrides distance cutoff
-        # Note: Distance is still kept in output for reference, but filtering uses coordinates
+        # Coordinate-based filtering: filter by m/z and RT distances instead of euclidean distance
         print(f"Using coordinate-based filtering: mz_cutoff={mz_cutoff}, rt_cutoff={rt_cutoff}")
-        filtered_edges = edges  # Distance value always kept in edges dict
-        print(f"Loaded {len(edges)} total edges (all edges kept in dict, coordinate filtering noted)")
+        filtered_edges = [e for e in edges 
+                         if e.get('mz_distance', 0) <= mz_cutoff and e.get('rt_distance', 0) <= rt_cutoff]
+        print(f"Loaded {len(edges)} total edges, {len(filtered_edges)} pass coordinate cutoff (mz≤{mz_cutoff}, rt≤{rt_cutoff})")
     else:
         # Distance-based filtering (default)
         filtered_edges = [e for e in edges if e.get('distance', 0) <= edge_cutoff]
@@ -362,14 +445,16 @@ def analyze_graph(graph: ig.Graph, vertex_attrs: Dict) -> Dict:
     if graph is None or graph.ecount() == 0:
         return {}
     
+    degrees = graph.degree()
     analysis = {
         'num_vertices': graph.vcount(),
         'num_edges': graph.ecount(),
         'density': graph.density(),
         'num_components': len(graph.components()),
-        'avg_degree': np.mean(graph.degree()),
-        'max_degree': max(graph.degree()),
-        'min_degree': min(graph.degree()),
+        'avg_degree': float(np.mean(degrees)),
+        'std_degree': float(np.std(degrees)),
+        'max_degree': int(max(degrees)),
+        'min_degree': int(min(degrees)),
     }
     
     # Get connected components
@@ -393,6 +478,7 @@ def analyze_graph(graph: ig.Graph, vertex_attrs: Dict) -> Dict:
         filename: {
             'num_vertices': len(degrees),
             'avg_degree': float(np.mean(degrees)),
+            'std_degree': float(np.std(degrees)),
             'max_degree': int(max(degrees)) if degrees else 0,
             'min_degree': int(min(degrees)) if degrees else 0
         }
@@ -420,6 +506,322 @@ def analyze_graph(graph: ig.Graph, vertex_attrs: Dict) -> Dict:
     return analysis
 
 
+def export_degree_distribution_histogram(graph: ig.Graph, vertex_attrs: Dict, output_path: str):
+    """Export degree distribution as histogram image."""
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        print("  ⓘ Note: matplotlib not available for histogram export")
+        return False
+    
+    degrees = graph.degree()
+    
+    # Create histogram
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+    
+    # Overall degree distribution
+    ax1.hist(degrees, bins=range(min(degrees), max(degrees) + 2), edgecolor='black', color='steelblue', alpha=0.7)
+    ax1.set_xlabel('Vertex Degree', fontsize=12)
+    ax1.set_ylabel('Number of Vertices', fontsize=12)
+    ax1.set_title('Degree Distribution (All Vertices)', fontsize=14, fontweight='bold')
+    ax1.grid(True, alpha=0.3)
+    ax1.axvline(np.mean(degrees), color='red', linestyle='--', linewidth=2, label=f'Mean: {np.mean(degrees):.2f}')
+    ax1.axvline(np.median(degrees), color='green', linestyle='--', linewidth=2, label=f'Median: {np.median(degrees):.2f}')
+    ax1.legend()
+    
+    # Degree distribution by file
+    file_colors_dict = {}
+    unique_filenames = sorted(set(vertex_attrs[v]['filename'] for v in range(graph.vcount())))
+    palette = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#FFA07A', '#98D8C8', '#F7DC6F', '#BB8FCE', '#85C1E2', '#F8B88B', '#AED6F1']
+    
+    for idx, filename in enumerate(unique_filenames):
+        file_degrees = [graph.degree(v) for v in range(graph.vcount()) if vertex_attrs[v]['filename'] == filename]
+        color = palette[idx % len(palette)]
+        from pathlib import Path
+        file_label = Path(filename).stem
+        ax2.hist(file_degrees, bins=range(min(degrees), max(degrees) + 2), alpha=0.5, label=file_label, color=color, edgecolor='black')
+    
+    ax2.set_xlabel('Vertex Degree', fontsize=12)
+    ax2.set_ylabel('Number of Vertices', fontsize=12)
+    ax2.set_title('Degree Distribution (by Source File)', fontsize=14, fontweight='bold')
+    ax2.legend(fontsize=9, loc='upper right')
+    ax2.grid(True, alpha=0.3)
+    
+    fig.suptitle(f'Network Graph Degree Analysis ({graph.vcount()} vertices, {graph.ecount()} edges)', fontsize=16, fontweight='bold')
+    
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    
+    print(f"✓ Saved degree distribution histogram: {output_path}")
+    return True
+
+
+def analyze_graph_composition(graph: ig.Graph, vertex_attrs: Dict) -> Dict:
+    """
+    Analyze graph composition: how many connected components have how many features and files.
+    
+    Returns a dictionary with statistics like:
+    {
+        "component_composition": {
+            "3_features_2_files": 5,  # 5 components with 3 features from 2 files
+            "4_features_3_files": 2,  # 2 components with 4 features from 3 files
+            ...
+        },
+        "composition_summary": {
+            "total_components": 10,
+            "total_features": 35,
+            "avg_features_per_component": 3.5,
+            "avg_files_per_component": 2.1,
+            "max_features_in_component": 10,
+            "max_files_in_component": 3,
+            "components_by_size": {
+                "1": 2,  # 2 components with 1 feature
+                "2": 5,  # 5 components with 2 features
+                "3": 3,  # 3 components with 3 features
+            }
+        }
+    }
+    """
+    if graph is None or graph.vcount() == 0:
+        return {'component_composition': {}, 'composition_summary': {}}
+    
+    components = graph.components()
+    composition_map = {}  # Key: f"{num_features}_{num_files}", Value: count
+    features_per_component = []
+    files_per_component = []
+    components_by_size = {}  # Key: num_features, Value: count
+    
+    for component_vertices in components:
+        # Count unique files in this component
+        unique_files = set()
+        for vertex_id in component_vertices:
+            filename = vertex_attrs[vertex_id]['filename']
+            unique_files.add(filename)
+        
+        num_features = len(component_vertices)
+        num_files = len(unique_files)
+        
+        # Create composition key
+        comp_key = f"{num_features}_{num_files}"
+        composition_map[comp_key] = composition_map.get(comp_key, 0) + 1
+        
+        features_per_component.append(num_features)
+        files_per_component.append(num_files)
+        
+        # Track components by size
+        size_key = str(num_features)
+        components_by_size[size_key] = components_by_size.get(size_key, 0) + 1
+    
+    # Build summary statistics
+    summary = {
+        'total_components': len(components),
+        'total_features': sum(features_per_component),
+        'avg_features_per_component': float(np.mean(features_per_component)) if features_per_component else 0,
+        'avg_files_per_component': float(np.mean(files_per_component)) if files_per_component else 0,
+        'max_features_in_component': max(features_per_component) if features_per_component else 0,
+        'max_files_in_component': max(files_per_component) if files_per_component else 0,
+        'min_features_in_component': min(features_per_component) if features_per_component else 0,
+        'min_files_in_component': min(files_per_component) if files_per_component else 0,
+        'components_by_size': {k: components_by_size[k] for k in sorted(components_by_size.keys(), key=int)},
+    }
+    
+    return {
+        'component_composition': composition_map,
+        'composition_summary': summary
+    }
+
+
+def cluster_graph_independent_components(graph: ig.Graph, vertex_attrs: Dict, 
+                                          method: str = 'louvain') -> Tuple[Dict, Dict]:
+    """
+    Perform clustering on each connected component independently.
+    
+    Args:
+        graph: igraph Graph object
+        vertex_attrs: Dictionary of vertex attributes
+        method: Clustering method ('louvain', 'walktrap', 'label_propagation', 'edge_betweenness')
+    
+    Returns:
+        Tuple of (vertex_to_cluster_map, component_cluster_info)
+        - vertex_to_cluster_map: {vertex_id: ('component_id', 'cluster_id')}
+        - component_cluster_info: {component_id: {'vertices': [...], 'clusters': {cluster_id: [vertices]}, 'method': ..., 'modularity': ...}}
+    """
+    print(f"\nClustering graph using {method} method (independent components)...")
+    
+    if graph is None or graph.vcount() == 0:
+        print("✗ Cannot cluster empty graph")
+        return {}, {}
+    
+    components = graph.components()
+    print(f"  Found {len(components)} connected components")
+    
+    vertex_to_cluster_map = {}
+    component_cluster_info = {}
+    
+    for comp_idx, component_vertices in enumerate(components):
+        if len(component_vertices) == 1:
+            # Single vertex component - assign to its own cluster
+            vertex = component_vertices[0]
+            vertex_to_cluster_map[vertex] = (comp_idx, 0)
+            component_cluster_info[comp_idx] = {
+                'vertices': component_vertices,
+                'clusters': {0: component_vertices},
+                'method': method,
+                'modularity': None,
+                'num_clusters': 1,
+                'details': f"Single vertex component"
+            }
+            continue
+        
+        # Extract subgraph for this component
+        subgraph = graph.induced_subgraph(component_vertices)
+        
+        # Perform clustering based on method
+        try:
+            if method.lower() == 'louvain':
+                clustering = subgraph.community_multilevel()
+            elif method.lower() == 'walktrap':
+                clustering = subgraph.community_walktrap().as_clustering()
+            elif method.lower() == 'label_propagation':
+                clustering = subgraph.community_label_propagation()
+            elif method.lower() == 'edge_betweenness':
+                clustering = subgraph.community_edge_betweenness().as_clustering()
+            else:
+                print(f"  ✗ Unknown clustering method: {method}. Using Louvain.")
+                clustering = subgraph.community_multilevel()
+            
+            # Extract modularity
+            try:
+                modularity = subgraph.modularity(clustering)
+            except:
+                modularity = None
+            
+            # Map cluster IDs back to original vertex IDs
+            clusters_dict = {}
+            for cluster_id, members in enumerate(clustering):
+                original_vertex_ids = [component_vertices[local_idx] for local_idx in members]
+                clusters_dict[cluster_id] = original_vertex_ids
+                
+                # Map each vertex to its cluster
+                for vertex_id in original_vertex_ids:
+                    vertex_to_cluster_map[vertex_id] = (comp_idx, cluster_id)
+            
+            component_cluster_info[comp_idx] = {
+                'vertices': component_vertices,
+                'clusters': clusters_dict,
+                'method': method,
+                'modularity': float(modularity) if modularity is not None else None,
+                'num_clusters': len(clusters_dict),
+                'details': f"{len(clusters_dict)} clusters detected, modularity={modularity:.3f}" if modularity is not None else f"{len(clusters_dict)} clusters detected"
+            }
+            
+        except Exception as e:
+            print(f"  ⚠ Error clustering component {comp_idx}: {e}")
+            # Fall back to single cluster
+            vertex_to_cluster_map[component_vertices[0]] = (comp_idx, 0)
+            component_cluster_info[comp_idx] = {
+                'vertices': component_vertices,
+                'clusters': {0: component_vertices},
+                'method': method,
+                'modularity': None,
+                'num_clusters': 1,
+                'details': f"Clustering failed, using single cluster"
+            }
+    
+    # Print clustering summary
+    total_clusters = sum(info['num_clusters'] for info in component_cluster_info.values())
+    print(f"  ✓ Clustering complete: {total_clusters} clusters across {len(components)} components")
+    
+    for comp_idx in sorted(component_cluster_info.keys())[:10]:  # Show first 10
+        info = component_cluster_info[comp_idx]
+        print(f"    Component {comp_idx}: {info['details']}")
+    
+    if len(component_cluster_info) > 10:
+        print(f"    ... and {len(component_cluster_info) - 10} more components")
+    
+    return vertex_to_cluster_map, component_cluster_info
+
+
+def export_clusters_to_json(vertex_to_cluster_map: Dict, component_cluster_info: Dict, 
+                           vertex_attrs: Dict, output_path: str):
+    """
+    Export clustering results to JSON file.
+    
+    Args:
+        vertex_to_cluster_map: {vertex_id: (component_id, cluster_id)}
+        component_cluster_info: {component_id: {...}}
+        vertex_attrs: {vertex_id: {filename, feature_idx, label, ...}}
+        output_path: Path to save JSON file
+    """
+    print(f"\nExporting clusters to JSON: {output_path}")
+    
+    # Build cluster-centric view
+    clusters_output = {}
+    
+    for comp_idx, info in component_cluster_info.items():
+        comp_key = f"component_{comp_idx}"
+        clusters_output[comp_key] = {
+            'component_id': comp_idx,
+            'method': info['method'],
+            'num_clusters': info['num_clusters'],
+            'modularity': info['modularity'],
+            'details': info['details'],
+            'clusters': {}
+        }
+        
+        # For each cluster in this component
+        for cluster_id, vertex_ids in info['clusters'].items():
+            cluster_key = f"cluster_{cluster_id}"
+            cluster_vertices = []
+            
+            for vertex_id in vertex_ids:
+                vertex_info = vertex_attrs[vertex_id]
+                cluster_vertices.append({
+                    'vertex_id': vertex_id,
+                    'filename': vertex_info['filename'],
+                    'feature_idx': vertex_info['feature_idx'],
+                    'label': vertex_info['label']
+                })
+            
+            clusters_output[comp_key]['clusters'][cluster_key] = {
+                'cluster_id': cluster_id,
+                'num_vertices': len(vertex_ids),
+                'vertices': cluster_vertices
+            }
+    
+    # Save to JSON
+    with open(output_path, 'w') as f:
+        json.dump(clusters_output, f, indent=2)
+    
+    print(f"✓ Saved clusters to JSON: {output_path}")
+    
+    # Print summary
+    total_clusters = sum(len(info['clusters']) for info in clusters_output.values())
+    total_vertices = sum(len(cluster['vertices']) 
+                        for comp in clusters_output.values() 
+                        for cluster in comp['clusters'].values())
+    print(f"  Summary: {len(clusters_output)} components, {total_clusters} total clusters, {total_vertices} vertices")
+
+
+def get_cluster_colors(num_clusters: int) -> List[str]:
+    """Generate distinct colors for clusters."""
+    # Color palette for clusters
+    palette = [
+        '#FF6B6B', '#4ECDC4', '#45B7D1', '#FFA07A', '#98D8C8',
+        '#F7DC6F', '#BB8FCE', '#85C1E2', '#F8B88B', '#AED6F1',
+        '#F5B041', '#82E0AA', '#F1948A', '#85C1E2', '#D7BDE2',
+        '#F8B739', '#6C5B7B', '#FA7921', '#87E8D5', '#FF4757',
+        '#1ABC9C', '#3498DB', '#9B59B6', '#E74C3C', '#E67E22',
+    ]
+    
+    colors = []
+    for i in range(num_clusters):
+        colors.append(palette[i % len(palette)])
+    
+    return colors
+
+
 def save_graph(graph: ig.Graph, output_path: str, format: str = 'graphml'):
     """Save graph in various formats."""
     if format == 'graphml':
@@ -435,7 +837,9 @@ def save_graph(graph: ig.Graph, output_path: str, format: str = 'graphml'):
         raise ValueError(f"Unsupported format: {format}")
 
 
-def visualize_graph(graph: ig.Graph, vertex_attrs: Dict, output_image: str):
+def visualize_graph(graph: ig.Graph, vertex_attrs: Dict, output_image: str,
+                   cluster_map: Dict = None, component_cluster_info: Dict = None,
+                   layout_engine: str = 'dot'):
     """Generate and save network graph visualization using Graphviz (with optimizations)."""
     if not GRAPHVIZ_AVAILABLE:
         print("✗ graphviz Python package not available for visualization")
@@ -486,30 +890,46 @@ def visualize_graph(graph: ig.Graph, vertex_attrs: Dict, output_image: str):
         print(f"    - Use simpler layout: graph.gml or graph.graphml format instead")
         
         # Create graph
-        dot = graphviz.Digraph(comment='Feature Network', format=output_format)
+        dot = graphviz.Digraph(comment='Feature Network', format=output_format, engine=layout_engine)
         
         # Optimize DOT attributes for speed and label placement
-        dot.attr(rankdir='LR', splines='polyline', overlap='compress', sep='+0.5', pad='0.2')
+        if layout_engine in ['sfdp', 'fdp', 'neato']:
+            dot.attr(overlap='false', splines='true', sep='+1.0', pad='0.3')
+        else:
+            dot.attr(rankdir='LR', splines='polyline', overlap='compress', sep='+0.5', pad='0.2')
         dot.attr('node', shape='circle', style='filled', fontsize='1.5', margin='0.01', width='0.1', height='0.1')
         dot.attr('edge', fontsize='1')
         
         print(f"\n  [1/3] Adding {num_vertices} vertices...", end='', flush=True)
         vertex_time_start = time.time()
         
+        # Precompute cluster colors if clustering is enabled
+        cluster_color_map = {}
+        if cluster_map and component_cluster_info:
+            cluster_keys = sorted(set(cluster_map.values()))
+            cluster_colors = get_cluster_colors(len(cluster_keys))
+            cluster_color_map = {key: cluster_colors[i] for i, key in enumerate(cluster_keys)}
+
         # Add vertices (nodes) with small labels
         for vertex_id in range(num_vertices):
-            # Get color from vertex attributes (assigned based on source file)
+            # Base color from vertex attributes (assigned based on source file)
             if vertex_attrs and vertex_id in vertex_attrs and 'color' in vertex_attrs[vertex_id]:
-                color = vertex_attrs[vertex_id]['color']
+                base_color = vertex_attrs[vertex_id]['color']
             else:
                 # Fallback color (should not happen)
-                color = '#87CEEB'
+                base_color = '#87CEEB'
+
+            # Cluster overlay color (fill) if available
+            fill_color = base_color
+            if cluster_map and vertex_id in cluster_map:
+                cluster_key = cluster_map[vertex_id]
+                fill_color = cluster_color_map.get(cluster_key, base_color)
             
             # Get the label from vertex_attrs
             label = vertex_attrs[vertex_id]['label'] if vertex_id in vertex_attrs else str(vertex_id)
             
             # Add node with label visible and assigned color
-            dot.node(str(vertex_id), label=label, color=color)
+            dot.node(str(vertex_id), label=label, color=base_color, fillcolor=fill_color)
             
             # Progress every 50k vertices
             if (vertex_id + 1) % 50000 == 0:
@@ -690,6 +1110,212 @@ def visualize_graph(graph: ig.Graph, vertex_attrs: Dict, output_image: str):
         return False
 
 
+def save_cluster_visualization_report(graph: ig.Graph, vertex_attrs: Dict, 
+                                     vertex_to_cluster_map: Dict, component_cluster_info: Dict,
+                                     output_path: str):
+    """
+    Create an SVG visualization report showing cluster assignments.
+    This generates a legend-based report showing vertices grouped by cluster.
+    
+    Args:
+        graph: igraph Graph object
+        vertex_attrs: Dictionary of vertex attributes
+        vertex_to_cluster_map: {vertex_id: (component_id, cluster_id)}
+        component_cluster_info: {component_id: {...clusters...}}
+        output_path: Output SVG file path
+    """
+    print(f"\nGenerating cluster visualization report: {output_path}")
+    
+    if not vertex_to_cluster_map:
+        print("✗ No cluster data available")
+        return False
+    
+    try:
+        # Build HTML/SVG report
+        html_content = """<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Cluster Analysis Report</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f5f5f5;
+        }
+        h1 {
+            color: #333;
+            border-bottom: 2px solid #007bff;
+            padding-bottom: 10px;
+        }
+        h2 {
+            color: #555;
+            margin-top: 30px;
+        }
+        .component {
+            background-color: white;
+            border-left: 4px solid #007bff;
+            padding: 15px;
+            margin: 15px 0;
+            border-radius: 5px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .cluster {
+            background-color: #f9f9f9;
+            border-left: 3px solid #17a2b8;
+            padding: 10px;
+            margin: 10px 0 10px 20px;
+            border-radius: 3px;
+        }
+        .cluster-header {
+            font-weight: bold;
+            color: #17a2b8;
+            margin-bottom: 5px;
+        }
+        .vertex-list {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+            gap: 10px;
+            margin-top: 8px;
+        }
+        .vertex {
+            background-color: white;
+            padding: 8px;
+            border-radius: 3px;
+            border-left: 3px solid #ddd;
+            font-size: 0.9em;
+            font-family: monospace;
+        }
+        .vertex-id {
+            color: #666;
+            font-size: 0.85em;
+        }
+        .stats {
+            background-color: #e7f3ff;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 15px 0;
+        }
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 10px;
+            margin-top: 10px;
+        }
+        .stat-item {
+            background-color: white;
+            padding: 10px;
+            border-radius: 3px;
+            text-align: center;
+        }
+        .stat-value {
+            font-size: 1.5em;
+            font-weight: bold;
+            color: #007bff;
+        }
+        .stat-label {
+            font-size: 0.9em;
+            color: #666;
+            margin-top: 5px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Cluster Analysis Report</h1>
+"""
+        
+        # Overall statistics
+        num_components = len(component_cluster_info)
+        total_clusters = sum(info['num_clusters'] for info in component_cluster_info.values())
+        total_vertices = len(vertex_attrs)
+        
+        html_content += f"""
+    <div class="stats">
+        <h2>Overall Statistics</h2>
+        <div class="stats-grid">
+            <div class="stat-item">
+                <div class="stat-value">{num_components}</div>
+                <div class="stat-label">Connected Components</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-value">{total_clusters}</div>
+                <div class="stat-label">Total Clusters</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-value">{total_vertices}</div>
+                <div class="stat-label">Total Features</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-value">{total_clusters / num_components:.2f}</div>
+                <div class="stat-label">Avg Clusters per Component</div>
+            </div>
+        </div>
+    </div>
+"""
+        
+        # Component-by-component report
+        html_content += "<h2>Component Details</h2>\n"
+        
+        for comp_idx in sorted(component_cluster_info.keys()):
+            info = component_cluster_info[comp_idx]
+            modularity_str = f"{info['modularity']:.3f}" if info['modularity'] is not None else 'N/A'
+            
+            html_content += f"""
+    <div class="component">
+        <h3>Component {comp_idx}</h3>
+        <p><strong>Method:</strong> {info['method']} | <strong>Clusters:</strong> {info['num_clusters']} | <strong>Modularity:</strong> {modularity_str}</p>
+        <p>{info['details']}</p>
+"""
+            
+            # List clusters in this component
+            for cluster_id in sorted(info['clusters'].keys()):
+                vertex_ids = info['clusters'][cluster_id]
+                
+                html_content += f"""
+        <div class="cluster">
+            <div class="cluster-header">Cluster {cluster_id} ({len(vertex_ids)} vertices)</div>
+            <div class="vertex-list">
+"""
+                
+                for vertex_id in sorted(vertex_ids):
+                    vertex_info = vertex_attrs[vertex_id]
+                    label = vertex_info['label']
+                    filename = Path(vertex_info['filename']).stem
+                    
+                    html_content += f"""
+                <div class="vertex">
+                    {label}
+                    <div class="vertex-id">({filename})</div>
+                </div>
+"""
+                
+                html_content += """
+            </div>
+        </div>
+"""
+            
+            html_content += "    </div>\n"
+        
+        html_content += """
+</body>
+</html>
+"""
+        
+        # Save as HTML (can be opened in browser)
+        with open(output_path.replace('.svg', '.html'), 'w') as f:
+            f.write(html_content)
+        
+        print(f"✓ Saved cluster visualization report (HTML): {output_path.replace('.svg', '.html')}")
+        
+        return True
+        
+    except Exception as e:
+        print(f"✗ Error generating cluster visualization: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
 def print_analysis(analysis: Dict):
     """Pretty print analysis results."""
     if not analysis:
@@ -704,7 +1330,7 @@ def print_analysis(analysis: Dict):
     print(f"  Vertices: {analysis.get('num_vertices', 'N/A')}")
     print(f"  Edges: {analysis.get('num_edges', 'N/A')}")
     print(f"  Density: {analysis.get('density', 'N/A'):.4f}")
-    print(f"  Average Degree: {analysis.get('avg_degree', 'N/A'):.2f}")
+    print(f"  Average Degree: {analysis.get('avg_degree', 'N/A'):.2f} ± {analysis.get('std_degree', 'N/A'):.2f}")
     print(f"  Max Degree: {analysis.get('max_degree', 'N/A')}")
     print(f"  Min Degree: {analysis.get('min_degree', 'N/A')}")
     
@@ -796,11 +1422,24 @@ def main():
     parser.add_argument("--output_gml", help="Output GML file path")
     parser.add_argument("--output_edgelist", help="Output edge list file path")
     parser.add_argument("--output_analysis", help="Output analysis JSON file path")
+    parser.add_argument("--output_composition", help="Output graph composition JSON file path")
     parser.add_argument("--output_image", help="Output image file path (PNG or PDF)")
+    parser.add_argument("--output_histogram", help="Output degree distribution histogram file path (PNG)")
     parser.add_argument("--skip-analysis", action='store_true', 
                        help="Skip graph analysis computation and statistics (speeds up execution)")
     parser.add_argument("--skip-visualization", action='store_true', 
                        help="Skip graph visualization rendering")
+    parser.add_argument("--layout_engine", type=str, default='dot',
+                       choices=['dot', 'sfdp', 'fdp', 'neato', 'twopi', 'circo'],
+                       help="Graphviz layout engine for visualization (default: dot)")
+    
+    # Clustering arguments
+    parser.add_argument("--enable-clustering", action='store_true',
+                       help="Enable clustering on connected components (detects sub-groups in graphs)")
+    parser.add_argument("--clustering-method", type=str, default='louvain',
+                       choices=['louvain', 'walktrap', 'label_propagation', 'edge_betweenness'],
+                       help="Clustering algorithm to use (default: louvain)")
+    parser.add_argument("--output-clusters-json", help="Output JSON file with cluster information")
     
     args = parser.parse_args()
     
@@ -869,12 +1508,39 @@ def main():
     
     # Analyze graph (if not skipped)
     analysis = None
+    graph_composition = None
     if not args.skip_analysis:
         print("\nAnalyzing graph...")
         analysis = analyze_graph(graph, vertex_attrs)
         print_analysis(analysis)
+        
+        # Also compute graph composition statistics
+        print("\nAnalyzing graph composition...")
+        graph_composition = analyze_graph_composition(graph, vertex_attrs)
+        
+        # Print composition summary
+        comp_summary = graph_composition.get('composition_summary', {})
+        if comp_summary:
+            print(f"  Total connected components: {comp_summary.get('total_components')}")
+            print(f"  Total features in components: {comp_summary.get('total_features')}")
+            print(f"  Average features per component: {comp_summary.get('avg_features_per_component', 0):.2f}")
+            print(f"  Average files per component: {comp_summary.get('avg_files_per_component', 0):.2f}")
+            print(f"  Components by size: {comp_summary.get('components_by_size', {})}")
     else:
         print("Skipping graph analysis (--skip-analysis enabled)")
+    
+    # Perform clustering (if enabled)
+    vertex_to_cluster_map = {}
+    component_cluster_info = {}
+    if args.enable_clustering:
+        print("\n" + "="*70)
+        print("Clustering Analysis")
+        print("="*70)
+        vertex_to_cluster_map, component_cluster_info = cluster_graph_independent_components(
+            graph, vertex_attrs, method=args.clustering_method.lower()
+        )
+    else:
+        print("\nClustering disabled (use --enable-clustering to enable)")
     
     # Add cutoff suffix to output filenames
     output_graphml = add_cutoff_suffix_to_filename(args.output_graphml, args.edge_cutoff, args.mz_cutoff, args.rt_cutoff, args.fraction)
@@ -882,6 +1548,8 @@ def main():
     output_edgelist = add_cutoff_suffix_to_filename(args.output_edgelist, args.edge_cutoff, args.mz_cutoff, args.rt_cutoff, args.fraction)
     output_image = add_cutoff_suffix_to_filename(args.output_image, args.edge_cutoff, args.mz_cutoff, args.rt_cutoff, args.fraction)
     output_analysis = add_cutoff_suffix_to_filename(args.output_analysis, args.edge_cutoff, args.mz_cutoff, args.rt_cutoff, args.fraction)
+    output_composition = add_cutoff_suffix_to_filename(args.output_composition, args.edge_cutoff, args.mz_cutoff, args.rt_cutoff, args.fraction)
+    output_histogram = add_cutoff_suffix_to_filename(args.output_histogram, args.edge_cutoff, args.mz_cutoff, args.rt_cutoff, args.fraction)
     
     # Save graph
     if output_graphml:
@@ -896,11 +1564,24 @@ def main():
     # Save visualization (if not skipped)
     if not args.skip_visualization:
         if output_image:
-            visualize_graph(graph, vertex_attrs, output_image)
+            visualize_graph(
+                graph,
+                vertex_attrs,
+                output_image,
+                cluster_map=vertex_to_cluster_map if args.enable_clustering else None,
+                component_cluster_info=component_cluster_info if args.enable_clustering else None,
+                layout_engine=args.layout_engine
+            )
         else:
             print("No --output_image specified. Visualization skipped.")
     else:
         print("Skipping visualization (--skip-visualization enabled)")
+    
+    # Export degree distribution histogram (if not skipped)
+    if output_histogram and analysis is not None:
+        export_degree_distribution_histogram(graph, vertex_attrs, output_histogram)
+    elif output_histogram and analysis is None:
+        print("✗ Skipping histogram (analysis was skipped)")
     
     # Save analysis
     if output_analysis and analysis is not None:
@@ -909,6 +1590,26 @@ def main():
         print(f"✓ Saved analysis: {output_analysis}")
     elif output_analysis and analysis is None:
         print("✗ Cannot save analysis (analysis was skipped)")
+    
+    # Save graph composition
+    if output_composition and graph_composition is not None:
+        with open(output_composition, 'w') as f:
+            json.dump(graph_composition, f, indent=2)
+        print(f"✓ Saved graph composition: {output_composition}")
+    elif output_composition and graph_composition is None:
+        print("✗ Cannot save graph composition (analysis was skipped)")
+    
+    # Save clusters (if clustering was enabled)
+    if args.enable_clustering and vertex_to_cluster_map:
+        if args.output_clusters_json:
+            output_clusters = add_cutoff_suffix_to_filename(args.output_clusters_json, args.edge_cutoff, args.mz_cutoff, args.rt_cutoff, args.fraction)
+            export_clusters_to_json(vertex_to_cluster_map, component_cluster_info, vertex_attrs, output_clusters)
+            
+            # Also generate visualization report
+            output_clusters_viz = output_clusters.replace('.json', '_report.html')
+            save_cluster_visualization_report(graph, vertex_attrs, vertex_to_cluster_map, component_cluster_info, output_clusters_viz)
+        else:
+            print("Clustering performed but --output-clusters-json not specified. Cluster data not saved.")
     
     # Return graph for interactive use
     return graph, vertex_attrs, analysis
