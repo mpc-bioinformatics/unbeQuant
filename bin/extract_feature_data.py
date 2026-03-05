@@ -85,13 +85,50 @@ def parse_scalar(s):
     return None
 
 
-def extract_feature_data(features_tsv: str, filename_base: str, round_up_to: int = 2) -> List[Dict]:
+def extract_feature_data(features_tsv: str, filename_base: str, round_up_to: int = 2, rt_start_trim: float = 0, rt_end_trim: float = 0) -> List[Dict]:
     """
     Extract feature data from TSV file.
+    
+    Args:
+        features_tsv: Path to TSV feature file
+        filename_base: Base filename for output
+        round_up_to: Decimal places for m/z rounding
+        rt_start_trim: Seconds to trim from the start of the measurement (retention time)
+        rt_end_trim: Maximum RT value to keep in seconds (keep only features with center <= this value, 0 = no limit)
     """
     print(f"  Loading features from TSV...")
     features_data = pd.read_csv(features_tsv, sep='\t')
+    print(f"    Loaded {len(features_data)} rows")
+    
+    # Validate that this is a feature TSV, not a PSM TSV
+    required_columns = {'l_mz_start', 'l_mz_end', 'l_rt_start', 'l_rt_end', 'charge'}
+    actual_columns = set(features_data.columns)
+    missing_columns = required_columns - actual_columns
+    
+    if missing_columns:
+        print(f"\n✗ ERROR: Input TSV file is missing required columns:")
+        print(f"  Missing: {', '.join(sorted(missing_columns))}")
+        print(f"  Available columns: {', '.join(sorted(list(actual_columns)[:5]))}...")
+        print(f"\n  This appears to be a PSM (identification) TSV file, not a feature TSV file.")
+        print(f"  Expected input: Feature TSV from OpenMS feature extraction")
+        print(f"  Expected columns: {', '.join(sorted(required_columns))}")
+        
+        # Check if this looks like a PSM file
+        if 'psm_id' in actual_columns or 'peptide_seq' in actual_columns:
+            print(f"\n  This looks like a PSM/identification result file.")
+            print(f"  Please use the feature TSV files from the quantification step instead.")
+        return []
+    
+    if len(features_data) == 0:
+        print(f"  ✗ TSV file contains no data rows")
+        return []
+    
     print(f"    Loaded {len(features_data)} features")
+    if rt_start_trim > 0 or rt_end_trim > 0:
+        start_msg = f"start +{rt_start_trim:.1f} sec" if rt_start_trim > 0 else ""
+        end_msg = f"end <= {rt_end_trim:.1f} sec" if rt_end_trim > 0 else ""
+        trim_msg = ", ".join(filter(None, [start_msg, end_msg]))
+        print(f"    RT trimming: {trim_msg}")
     
     feature_data_list = []
     box_count = 0
@@ -125,14 +162,14 @@ def extract_feature_data(features_tsv: str, filename_base: str, round_up_to: int
                     feature_ls.append((float(mz), float(rt*60), float(intensity)))
         elif l_mass_to_charges_raw:
             for mz, rt, intensity in zip(l_mass_to_charges_raw, l_retention_times_raw, l_intensities_raw):
-                feature_ls.append((float(mz), float((rt*60)), float(intensity)))
+                feature_ls.append((float(mz), float(rt*60), float(intensity)))
         
         # Ensure we have valid boundaries
         if mz_starts and mz_ends and rt_starts and rt_ends and feature_ls:
             mz_start = min(mz_starts + mz_ends)
             mz_end = max(mz_starts + mz_ends)
-            rt_start = min(rt_starts + rt_ends)
-            rt_end = max(rt_starts + rt_ends)
+            rt_start = min(rt_starts + rt_ends)  # In seconds
+            rt_end = max(rt_starts + rt_ends)    # In seconds
             
             # Calculate geometric center from feature_ls coordinates
             if feature_ls:
@@ -155,6 +192,16 @@ def extract_feature_data(features_tsv: str, filename_base: str, round_up_to: int
                             y_vec = (rt - y_center_geo) * (intensity / intensity_sum)
                             x_center += x_vec
                             y_center += y_vec
+                
+                # Apply RT trimming filter based on y_center (centered RT position in seconds)
+                if rt_start_trim > 0 or rt_end_trim > 0:
+                    rt_start_min = rt_start_trim if rt_start_trim > 0 else float('-inf')  # Absolute lower bound
+                    rt_end_max = rt_end_trim if rt_end_trim > 0 else float('inf')  # Absolute upper bound
+                    
+                    # Skip feature if its center is outside the allowed RT range
+                    if not (rt_start_min <= y_center <= rt_end_max):
+                        skipped_count += 1
+                        continue
                 
                 feature_data_list.append({
                     'idx': idx,
@@ -191,6 +238,8 @@ def main():
     parser.add_argument("--round_up_to", type=int, default=2, help="Decimal places for m/z rounding")
     parser.add_argument("--feature_mode", default="CoM", help="Feature center calculation mode")
     parser.add_argument("--generate_diagnostic", type=bool, default=False, help="Generate diagnostic plots")
+    parser.add_argument("--rt_start_trim", type=float, default=0, help="Seconds to trim from the start of retention time")
+    parser.add_argument("--rt_end_trim", type=float, default=0, help="Maximum RT value to keep (keep only features with RT <= this value, 0 = no limit)")
     
     args = parser.parse_args()
     
@@ -204,7 +253,9 @@ def main():
     feature_data_list = extract_feature_data(
         args.tsv,
         basename,
-        round_up_to=args.round_up_to
+        round_up_to=args.round_up_to,
+        rt_start_trim=args.rt_start_trim,
+        rt_end_trim=args.rt_end_trim
     )
     
     # Save as pickle

@@ -20,10 +20,15 @@ params.main_comet_params = "/workspaces/unbeQuant/example_configurations/comet_c
 //                               (null=auto: OFF for mz/rt cutoff, ON for euclidean cutoff)
 //   --mmf_distance_calc_before_scaling: Calculate distance before coordinate scaling (default: false)
 //   --mmf_normalize_edge_distances: Normalize edge distances to [0, 1] range for visualization (default: false)
+//   --mmf_postpair_normalize_coordinates: Rescale axes to balance coordinate ranges (adds rescaled distance fields, default: false)
 //   --mmf_skip_json_output: Skip JSON serialization for speed (default: false - JSON enabled by default)
 //   --mmf_analyze_pep_idents: Perform detailed pep_ident matching analysis (default: true - enabled by default)
 //   --mmf_generate_html_report: Generate HTML pairing report (default: true)
 //   --mmf_build_network_graph: Build and analyze network graph composition (default: false)
+//   --mmf_graph_layout_engine: Graphviz layout engine (dot, sfdp, fdp, neato, twopi, circo)
+//   --mmf_graph_layout_use_weights: Use edge distances to influence layout (neato/fdp/sfdp only)
+//   --mmf_graph_use_graphviz_clusters: Group clusters into Graphviz subgraphs
+//   --mmf_graph_use_coordinate_layout: Use original feature coordinates as initial positions (neato/fdp only)
 //
 // Example usages:
 //   With coordinate-based filtering:

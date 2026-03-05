@@ -91,7 +91,7 @@ if __name__ == "__main__":
                 [fm[fm_mz_end]], # mz_ends
                 [float(fm[fm_rt_start]) * 60], # rt_starts in seconds
                 [float(fm[fm_rt_end]) * 60], # rt_ends in seconds
-                [list(h5["retention_times"][idx])], # retentiontimes
+                [list(h5["retention_times"][idx])], # retentiontimes #TODO why here in mins and not in seconds?
                 [list(h5["mass_to_charge"][idx])], # retentiontimes
                 [list(h5["intensities"][idx])], # intensities
                 fm[fm_ms2_scans] # ms2_scans

@@ -11,13 +11,34 @@
 			"enableNonRootDocker": "true",
 			"moby": "true"
 		}
-	}
+	},
 
-	// Use 'forwardPorts' to make a list of ports inside the container available locally.
-	// "forwardPorts": [],
+	// Memory management for WSL2
+	"hostRequirements": {
+		"memory": "24gb",
+		"cpus": 8
+	},
 
 	// Use 'postCreateCommand' to run commands after the container is created.
-	// "postCreateCommand": "docker --version",
+	"postCreateCommand": "chmod +x /workspaces/unbeQuant/cleanup_memory.sh && echo '✓ Dev container ready'",
+
+	// VS Code settings applied to this workspace
+	"customizations": {
+		"vscode": {
+			"settings": {
+				"files.watcherExclude": {
+					"**/work": true,
+					"**/work/**": true,
+					"**/results/**": true,
+					"**/.nextflow": true,
+					"**/.nextflow/**": true
+				}
+			}
+		}
+	},
+
+	// Forward ports if needed
+	// "forwardPorts": [],
 
 	// Configure tool-specific properties.
 	// "customizations": {},

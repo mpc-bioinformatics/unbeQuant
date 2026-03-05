@@ -92,6 +92,130 @@ def load_cutoff_params_from_paired_features(pkl_path: str) -> Dict:
         return {}
 
 
+def extract_vertex_coordinates_from_edges(edges: List[Dict], vertex_id_map: Dict) -> Dict[int, Tuple[float, float]]:
+    """
+    Extract original (m/z, RT) coordinates for each vertex from edge data.
+    
+    Args:
+        edges: List of edge dictionaries with coordinate information
+        vertex_id_map: Mapping of (filename, feature_idx) -> vertex_id
+    
+    Returns:
+        Dictionary mapping vertex_id -> (x_coord, y_coord) from original heatmap space
+    """
+    vertex_coords = {}
+    
+    # Extract coordinates from edges
+    # Each edge has file1/file2 or current_file/matched_file with feature references
+    # We need to find any edge that references each vertex to get its coordinates
+    
+    # Build a coordinate lookup from edges
+    # Edges don't directly contain coordinates, but we can infer relative positions from distances
+    # For now, return empty dict - coordinates need to be passed separately
+    
+    print("  Note: Coordinate extraction from edges requires feature data with x_center, y_center fields")
+    return vertex_coords
+
+
+def load_feature_coordinates_from_jsons(feature_json_files: List[str]) -> Dict[Tuple[str, int], Tuple[float, float]]:
+    """
+    Load feature coordinates (x_center, y_center) from feature data JSON files.
+    
+    Args:
+        feature_json_files: List of paths to feature data JSON files
+    
+    Returns:
+        Dictionary mapping (filename, feature_idx) -> (x_center, y_center)
+    """
+    print(f"\nLoading feature coordinates from {len(feature_json_files)} JSON files...")
+    
+    coord_map = {}
+    
+    for json_file in feature_json_files:
+        try:
+            with open(json_file, 'r') as f:
+                features = json.load(f)
+            
+            if not isinstance(features, list):
+                print(f"  ⚠ Warning: {json_file} does not contain a feature list")
+                continue
+            
+            # Extract coordinates for each feature
+            for feature in features:
+                if 'filename' not in feature or '_feat_idx' not in feature:
+                    continue
+                if 'x_center' not in feature or 'y_center' not in feature:
+                    continue
+                
+                key = (feature['filename'], feature['_feat_idx'])
+                coord_map[key] = (float(feature['x_center']), float(feature['y_center']))
+            
+            print(f"  ✓ Loaded {len(features)} features from {Path(json_file).name}")
+        
+        except Exception as e:
+            print(f"  ✗ Error loading {json_file}: {e}")
+            continue
+    
+    print(f"  ✓ Total features with coordinates: {len(coord_map)}")
+    return coord_map
+
+
+def map_coordinates_to_vertices(coord_map: Dict[Tuple[str, int], Tuple[float, float]], 
+                                 vertex_id_map: Dict[Tuple[str, int], int],
+                                 vertex_attrs: Dict) -> Dict[int, Tuple[float, float]]:
+    """
+    Map feature coordinates to vertex IDs and normalize for visualization.
+    
+    Args:
+        coord_map: Dictionary mapping (filename, feature_idx) -> (x, y)
+        vertex_id_map: Dictionary mapping (filename, feature_idx) -> vertex_id
+        vertex_attrs: Dictionary of vertex attributes
+    
+    Returns:
+        Dictionary mapping vertex_id -> (x_scaled, y_scaled) for Graphviz
+    """
+    print("\nMapping coordinates to vertices...")
+    
+    vertex_coords = {}
+    
+    # Map coordinates to vertex IDs
+    for vertex_key, vertex_id in vertex_id_map.items():
+        if vertex_key in coord_map:
+            vertex_coords[vertex_id] = coord_map[vertex_key]
+    
+    if not vertex_coords:
+        print("  ✗ No coordinate matches found")
+        return {}
+    
+    print(f"  ✓ Matched {len(vertex_coords)}/{len(vertex_id_map)} vertices with coordinates")
+    
+    # Normalize coordinates for visualization
+    # Find coordinate ranges
+    x_coords = [x for x, y in vertex_coords.values()]
+    y_coords = [y for x, y in vertex_coords.values()]
+    
+    min_x, max_x = min(x_coords), max(x_coords)
+    min_y, max_y = min(y_coords), max(y_coords)
+    
+    x_range = max_x - min_x if max_x > min_x else 1.0
+    y_range = max_y - min_y if max_y > min_y else 1.0
+    
+    # Scale to a reasonable coordinate range for Graphviz (e.g., 0-100)
+    scale_factor = 100.0
+    
+    normalized_coords = {}
+    for vertex_id, (x, y) in vertex_coords.items():
+        # Normalize to 0-1 range, then scale
+        x_norm = ((x - min_x) / x_range) * scale_factor
+        y_norm = ((y - min_y) / y_range) * scale_factor
+        normalized_coords[vertex_id] = (x_norm, y_norm)
+    
+    print(f"  Coordinate ranges: x=[{min_x:.2f}, {max_x:.2f}], y=[{min_y:.2f}, {max_y:.2f}]")
+    print(f"  Scaled to: x=[0, {scale_factor}], y=[0, {scale_factor}]")
+    
+    return normalized_coords
+
+
 def get_file_colors(filenames: List[str]) -> Dict[str, str]:
     """
     Generate distinct colors for each unique filename.
@@ -506,8 +630,8 @@ def analyze_graph(graph: ig.Graph, vertex_attrs: Dict) -> Dict:
     return analysis
 
 
-def export_degree_distribution_histogram(graph: ig.Graph, vertex_attrs: Dict, output_path: str):
-    """Export degree distribution as histogram image."""
+def export_degree_distribution_histogram(graph: ig.Graph, vertex_attrs: Dict, output_path: str, graph_composition: Dict = None):
+    """Export degree distribution and component size distribution as histogram images."""
     try:
         import matplotlib.pyplot as plt
     except ImportError:
@@ -516,21 +640,49 @@ def export_degree_distribution_histogram(graph: ig.Graph, vertex_attrs: Dict, ou
     
     degrees = graph.degree()
     
-    # Create histogram
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+    # Create subplot grid: 2 rows, 3 columns
+    # Top: full degree dist (all), full degree dist (by file), component size (linear Y-axis)
+    # Bottom: zoomed 95% quartile (all), zoomed 95% quartile (by file), component size (log Y-axis)
+    fig, axes = plt.subplots(2, 3, figsize=(18, 10))
     
-    # Overall degree distribution
-    ax1.hist(degrees, bins=range(min(degrees), max(degrees) + 2), edgecolor='black', color='steelblue', alpha=0.7)
-    ax1.set_xlabel('Vertex Degree', fontsize=12)
-    ax1.set_ylabel('Number of Vertices', fontsize=12)
-    ax1.set_title('Degree Distribution (All Vertices)', fontsize=14, fontweight='bold')
+    ax1, ax2, ax3_linear = axes[0]  # Top row
+    ax1_zoom, ax2_zoom, ax3 = axes[1]  # Bottom row
+    
+    # Smart binning for degree distribution
+    max_degree = max(degrees) if degrees else 1
+    mean_degree = np.mean(degrees) if degrees else 0
+    std_degree = np.std(degrees) if degrees else 1
+    
+    # Determine appropriate number of bins
+    num_bins = min(50, max(int(max_degree / max(1, std_degree / 10)), 5))
+    degree_bins = np.linspace(min(degrees), max_degree, num_bins + 1)
+    
+    # Calculate 95th percentile for zoom
+    percentile_95 = np.percentile(degrees, 95)
+    
+    # --- PLOT 1: Overall degree distribution ---
+    ax1.hist(degrees, bins=degree_bins, edgecolor='black', color='steelblue', alpha=0.7)
+    ax1.set_xlabel('Vertex Degree', fontsize=11)
+    ax1.set_ylabel('Number of Vertices', fontsize=11)
+    ax1.set_title('Degree Distribution (All Vertices)', fontsize=12, fontweight='bold')
     ax1.grid(True, alpha=0.3)
     ax1.axvline(np.mean(degrees), color='red', linestyle='--', linewidth=2, label=f'Mean: {np.mean(degrees):.2f}')
     ax1.axvline(np.median(degrees), color='green', linestyle='--', linewidth=2, label=f'Median: {np.median(degrees):.2f}')
-    ax1.legend()
+    ax1.legend(fontsize=9)
     
-    # Degree distribution by file
-    file_colors_dict = {}
+    # --- PLOT 1 ZOOM: 95% quartile of degree distribution ---
+    degrees_95 = [d for d in degrees if d <= percentile_95]
+    zoom_bins = np.linspace(min(degrees_95), max(degrees_95), min(30, max(len(set(degrees_95)), 5)) + 1)
+    ax1_zoom.hist(degrees_95, bins=zoom_bins, edgecolor='black', color='steelblue', alpha=0.7)
+    ax1_zoom.set_xlabel('Vertex Degree', fontsize=11)
+    ax1_zoom.set_ylabel('Number of Vertices', fontsize=11)
+    ax1_zoom.set_title(f'Degree Distribution - 95% Quartile (≤{percentile_95:.1f})', fontsize=12, fontweight='bold')
+    ax1_zoom.grid(True, alpha=0.3)
+    ax1_zoom.axvline(np.mean(degrees_95), color='red', linestyle='--', linewidth=2, label=f'Mean: {np.mean(degrees_95):.2f}')
+    ax1_zoom.axvline(np.median(degrees_95), color='green', linestyle='--', linewidth=2, label=f'Median: {np.median(degrees_95):.2f}')
+    ax1_zoom.legend(fontsize=9)
+    
+    # --- PLOT 2: Degree distribution by file ---
     unique_filenames = sorted(set(vertex_attrs[v]['filename'] for v in range(graph.vcount())))
     palette = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#FFA07A', '#98D8C8', '#F7DC6F', '#BB8FCE', '#85C1E2', '#F8B88B', '#AED6F1']
     
@@ -539,21 +691,75 @@ def export_degree_distribution_histogram(graph: ig.Graph, vertex_attrs: Dict, ou
         color = palette[idx % len(palette)]
         from pathlib import Path
         file_label = Path(filename).stem
-        ax2.hist(file_degrees, bins=range(min(degrees), max(degrees) + 2), alpha=0.5, label=file_label, color=color, edgecolor='black')
+        ax2.hist(file_degrees, bins=degree_bins, alpha=0.5, label=file_label, color=color, edgecolor='black')
     
-    ax2.set_xlabel('Vertex Degree', fontsize=12)
-    ax2.set_ylabel('Number of Vertices', fontsize=12)
-    ax2.set_title('Degree Distribution (by Source File)', fontsize=14, fontweight='bold')
-    ax2.legend(fontsize=9, loc='upper right')
+    ax2.set_xlabel('Vertex Degree', fontsize=11)
+    ax2.set_ylabel('Number of Vertices', fontsize=11)
+    ax2.set_title('Degree Distribution (by Source File)', fontsize=12, fontweight='bold')
+    ax2.legend(fontsize=8, loc='upper right')
     ax2.grid(True, alpha=0.3)
     
-    fig.suptitle(f'Network Graph Degree Analysis ({graph.vcount()} vertices, {graph.ecount()} edges)', fontsize=16, fontweight='bold')
+    # --- PLOT 2 ZOOM: 95% quartile by file ---
+    for idx, filename in enumerate(unique_filenames):
+        file_degrees = [graph.degree(v) for v in range(graph.vcount()) if vertex_attrs[v]['filename'] == filename]
+        file_degrees_95 = [d for d in file_degrees if d <= percentile_95]
+        if file_degrees_95:
+            color = palette[idx % len(palette)]
+            file_label = Path(filename).stem
+            ax2_zoom.hist(file_degrees_95, bins=zoom_bins, alpha=0.5, label=file_label, color=color, edgecolor='black')
+    
+    ax2_zoom.set_xlabel('Vertex Degree', fontsize=11)
+    ax2_zoom.set_ylabel('Number of Vertices', fontsize=11)
+    ax2_zoom.set_title(f'Degree Distribution by File - 95% Quartile (≤{percentile_95:.1f})', fontsize=12, fontweight='bold')
+    ax2_zoom.legend(fontsize=8, loc='upper right')
+    ax2_zoom.grid(True, alpha=0.3)
+    
+    # --- PLOT 3: Components by size distribution (with log Y-axis, minimal labels) ---
+    if graph_composition and 'composition_summary' in graph_composition:
+        comp_by_size = graph_composition['composition_summary'].get('components_by_size', {})
+        if comp_by_size:
+            # Sort by size numerically
+            sizes = sorted([int(k) for k in comp_by_size.keys()])
+            counts = [comp_by_size[str(s)] for s in sizes]
+            
+            ax3.bar(range(len(sizes)), counts, color='darkorange', alpha=0.7, edgecolor='black')
+            ax3.set_xlabel('Component Size (# vertices)', fontsize=11)
+            ax3.set_ylabel('Number of Components', fontsize=11)
+            ax3.set_title('Components by Size Distribution (Log Scale)', fontsize=12, fontweight='bold')
+            ax3.set_yscale('log')  # Log scale for Y-axis
+            ax3.grid(True, alpha=0.3, axis='y')
+            
+            # Reduce X-axis label clutter: show every nth label based on number of sizes
+            tick_interval = max(1, len(sizes) // 10)  # Show approx 10 labels max
+            ax3.set_xticks(range(0, len(sizes), tick_interval))
+            ax3.set_xticklabels([str(sizes[i]) for i in range(0, len(sizes), tick_interval)], fontsize=9)
+    
+    # --- PLOT 6: Components by size distribution (with linear Y-axis) ---
+    if graph_composition and 'composition_summary' in graph_composition:
+        comp_by_size = graph_composition['composition_summary'].get('components_by_size', {})
+        if comp_by_size:
+            # Sort by size numerically
+            sizes = sorted([int(k) for k in comp_by_size.keys()])
+            counts = [comp_by_size[str(s)] for s in sizes]
+            
+            ax3_linear.bar(range(len(sizes)), counts, color='darkorange', alpha=0.7, edgecolor='black')
+            ax3_linear.set_xlabel('Component Size (# vertices)', fontsize=11)
+            ax3_linear.set_ylabel('Number of Components', fontsize=11)
+            ax3_linear.set_title('Components by Size Distribution (Linear Scale)', fontsize=12, fontweight='bold')
+            ax3_linear.grid(True, alpha=0.3, axis='y')
+            
+            # Reduce X-axis label clutter: show every nth label based on number of sizes
+            tick_interval = max(1, len(sizes) // 10)  # Show approx 10 labels max
+            ax3_linear.set_xticks(range(0, len(sizes), tick_interval))
+            ax3_linear.set_xticklabels([str(sizes[i]) for i in range(0, len(sizes), tick_interval)], fontsize=9)
+    
+    fig.suptitle(f'Network Graph Analysis ({graph.vcount()} vertices, {graph.ecount()} edges)', fontsize=14, fontweight='bold')
     
     plt.tight_layout()
     plt.savefig(output_path, dpi=150, bbox_inches='tight')
     plt.close()
     
-    print(f"✓ Saved degree distribution histogram: {output_path}")
+    print(f"✓ Saved network analysis histograms: {output_path}")
     return True
 
 
@@ -632,8 +838,24 @@ def analyze_graph_composition(graph: ig.Graph, vertex_attrs: Dict) -> Dict:
     }
 
 
+def _compute_cluster_edge_weights(subgraph: ig.Graph, weight_mode: str) -> List[float]:
+    """Compute edge weights for clustering from the 'distance' attribute."""
+    weights = []
+    for edge in subgraph.es:
+        distance = edge['distance'] if 'distance' in edge.attributes() else 1.0
+        if weight_mode == 'distance':
+            weight = float(distance)
+        else:
+            # Default: inverse distance (stronger weight for closer nodes)
+            weight = 1.0 / (1.0 + float(distance))
+        weights.append(weight)
+    return weights
+
+
 def cluster_graph_independent_components(graph: ig.Graph, vertex_attrs: Dict, 
-                                          method: str = 'louvain') -> Tuple[Dict, Dict]:
+                                          method: str = 'louvain',
+                                          use_weights: bool = False,
+                                          weight_mode: str = 'inverse') -> Tuple[Dict, Dict]:
     """
     Perform clustering on each connected component independently.
     
@@ -647,7 +869,8 @@ def cluster_graph_independent_components(graph: ig.Graph, vertex_attrs: Dict,
         - vertex_to_cluster_map: {vertex_id: ('component_id', 'cluster_id')}
         - component_cluster_info: {component_id: {'vertices': [...], 'clusters': {cluster_id: [vertices]}, 'method': ..., 'modularity': ...}}
     """
-    print(f"\nClustering graph using {method} method (independent components)...")
+    weight_note = f", weighted ({weight_mode})" if use_weights else ""
+    print(f"\nClustering graph using {method} method (independent components{weight_note})...")
     
     if graph is None or graph.vcount() == 0:
         print("✗ Cannot cluster empty graph")
@@ -679,14 +902,22 @@ def cluster_graph_independent_components(graph: ig.Graph, vertex_attrs: Dict,
         
         # Perform clustering based on method
         try:
+            weights = None
+            if use_weights:
+                weights = _compute_cluster_edge_weights(subgraph, weight_mode)
+                subgraph.es['weight'] = weights
+
             if method.lower() == 'louvain':
-                clustering = subgraph.community_multilevel()
+                clustering = subgraph.community_multilevel(weights=weights) if use_weights else subgraph.community_multilevel()
             elif method.lower() == 'walktrap':
-                clustering = subgraph.community_walktrap().as_clustering()
+                clustering = subgraph.community_walktrap(weights=weights).as_clustering() if use_weights else subgraph.community_walktrap().as_clustering()
             elif method.lower() == 'label_propagation':
-                clustering = subgraph.community_label_propagation()
+                clustering = subgraph.community_label_propagation(weights=weights) if use_weights else subgraph.community_label_propagation()
             elif method.lower() == 'edge_betweenness':
-                clustering = subgraph.community_edge_betweenness().as_clustering()
+                betweenness_weights = weights
+                if use_weights and weight_mode == 'inverse':
+                    betweenness_weights = _compute_cluster_edge_weights(subgraph, 'distance')
+                clustering = subgraph.community_edge_betweenness(weights=betweenness_weights).as_clustering() if use_weights else subgraph.community_edge_betweenness().as_clustering()
             else:
                 print(f"  ✗ Unknown clustering method: {method}. Using Louvain.")
                 clustering = subgraph.community_multilevel()
@@ -839,8 +1070,17 @@ def save_graph(graph: ig.Graph, output_path: str, format: str = 'graphml'):
 
 def visualize_graph(graph: ig.Graph, vertex_attrs: Dict, output_image: str,
                    cluster_map: Dict = None, component_cluster_info: Dict = None,
-                   layout_engine: str = 'dot'):
-    """Generate and save network graph visualization using Graphviz (with optimizations)."""
+                   layout_engine: str = 'dot',
+                   use_cluster_subgraphs: bool = False,
+                   layout_use_weights: bool = False,
+                   use_coordinate_layout: bool = False,
+                   vertex_coordinates: Dict = None):
+    """Generate and save network graph visualization using Graphviz (with optimizations).
+    
+    Args:
+        use_coordinate_layout: Use original feature coordinates as initial positions
+        vertex_coordinates: Dict mapping vertex_id -> (x, y) coordinates from heatmap
+    """
     if not GRAPHVIZ_AVAILABLE:
         print("✗ graphviz Python package not available for visualization")
         print("  Install with: pip install graphviz")
@@ -875,6 +1115,7 @@ def visualize_graph(graph: ig.Graph, vertex_attrs: Dict, output_image: str,
         num_edges = graph.ecount()
         print(f"\nRendering {num_vertices} vertices and {num_edges} edges...")
         print(f"  Output format: {output_format} (SVG is fastest, ~2x faster than PNG)")
+        print(f"  Layout engine: {layout_engine}")
         
         # Estimate rendering time based on graph size
         estimated_format_time = (num_vertices * 0.0001 + num_edges * 0.00005) / 60  # in minutes
@@ -889,6 +1130,20 @@ def visualize_graph(graph: ig.Graph, vertex_attrs: Dict, output_image: str,
         print(f"    - Filter by edge weight (--edge_cutoff <distance>)")
         print(f"    - Use simpler layout: graph.gml or graph.graphml format instead")
         
+        # Validate layout engine compatibility for weighted layouts
+        if layout_use_weights and layout_engine not in ['neato', 'fdp', 'sfdp']:
+            print(f"✗ Layout weights are only supported for neato, fdp, sfdp (got: {layout_engine})")
+            return False
+        
+        # Validate layout engine compatibility for coordinate-based layouts
+        if use_coordinate_layout and layout_engine not in ['neato', 'fdp']:
+            print(f"✗ Coordinate-based layout is only supported for neato, fdp (got: {layout_engine})")
+            return False
+        
+        if use_coordinate_layout and not vertex_coordinates:
+            print(f"✗ Coordinate-based layout requested but no coordinates provided")
+            return False
+
         # Create graph
         dot = graphviz.Digraph(comment='Feature Network', format=output_format, engine=layout_engine)
         
@@ -910,6 +1165,16 @@ def visualize_graph(graph: ig.Graph, vertex_attrs: Dict, output_image: str,
             cluster_colors = get_cluster_colors(len(cluster_keys))
             cluster_color_map = {key: cluster_colors[i] for i, key in enumerate(cluster_keys)}
 
+        # Build Graphviz cluster subgraphs when requested
+        cluster_subgraphs = {}
+        if use_cluster_subgraphs and cluster_map:
+            for cluster_key in sorted(set(cluster_map.values())):
+                cluster_name = f"cluster_{cluster_key[0]}_{cluster_key[1]}"
+                subgraph = graphviz.Digraph(name=cluster_name)
+                subgraph.attr(label=f"C{cluster_key[0]}:{cluster_key[1]}",
+                              style='dashed', color='#999999')
+                cluster_subgraphs[cluster_key] = subgraph
+
         # Add vertices (nodes) with small labels
         for vertex_id in range(num_vertices):
             # Base color from vertex attributes (assigned based on source file)
@@ -928,8 +1193,23 @@ def visualize_graph(graph: ig.Graph, vertex_attrs: Dict, output_image: str,
             # Get the label from vertex_attrs
             label = vertex_attrs[vertex_id]['label'] if vertex_id in vertex_attrs else str(vertex_id)
             
+            # Build node attributes
+            node_attrs = {'label': label, 'color': base_color, 'fillcolor': fill_color}
+            
+            # Add initial position if coordinate layout is enabled
+            if use_coordinate_layout and vertex_coordinates and vertex_id in vertex_coordinates:
+                x, y = vertex_coordinates[vertex_id]
+                # Graphviz pos format: "x,y!" (exclamation mark pins the position)
+                # Without !, it's used as a starting point but can be adjusted
+                node_attrs['pos'] = f"{x},{y}"
+            
             # Add node with label visible and assigned color
-            dot.node(str(vertex_id), label=label, color=base_color, fillcolor=fill_color)
+            if use_cluster_subgraphs and cluster_map and vertex_id in cluster_map:
+                cluster_key = cluster_map[vertex_id]
+                subgraph = cluster_subgraphs.get(cluster_key, dot)
+                subgraph.node(str(vertex_id), **node_attrs)
+            else:
+                dot.node(str(vertex_id), **node_attrs)
             
             # Progress every 50k vertices
             if (vertex_id + 1) % 50000 == 0:
@@ -938,6 +1218,11 @@ def visualize_graph(graph: ig.Graph, vertex_attrs: Dict, output_image: str,
                 remaining = (num_vertices - vertex_id - 1) / rate / 60
                 print(f"\n    {vertex_id + 1}/{num_vertices} ({100*(vertex_id+1)/num_vertices:.1f}%) - ETA: {remaining:.1f} min", end='', flush=True)
         
+        # Attach cluster subgraphs to the main graph after nodes are added
+        if cluster_subgraphs:
+            for subgraph in cluster_subgraphs.values():
+                dot.subgraph(subgraph)
+
         vertex_elapsed = time.time() - vertex_time_start
         print(f" ✓ ({vertex_elapsed:.1f}s)")
         
@@ -1051,14 +1336,26 @@ def visualize_graph(graph: ig.Graph, vertex_attrs: Dict, output_image: str,
             # Color based on distance: closer to 0 = darker/stronger connection
             alpha = int(255 * distance / (1.0 + distance))
             alpha = max(0, min(255, alpha))
+
+            # Use a darker outline to keep very light edges visible
+            outline_alpha = max(0, alpha - 40)
             
             # If bidirectional, use bidirectional arrow; otherwise use single direction
             arrow_dir = 'both' if is_bidirectional else 'forward'
             
             # Add edge with weight label
-            dot.edge(str(src), str(tgt), label=distance_label, 
-                    color=f'#{alpha:02x}{alpha:02x}{alpha:02x}', 
-                    penwidth='0.5', arrowsize='0.3', dir=arrow_dir)
+            edge_attrs = {
+                'label': distance_label,
+                'color': f'#{outline_alpha:02x}{outline_alpha:02x}{outline_alpha:02x}',
+                'fillcolor': f'#{alpha:02x}{alpha:02x}{alpha:02x}',
+                'style': 'filled',
+                'penwidth': '0.5',
+                'arrowsize': '0.3',
+                'dir': arrow_dir
+            }
+            if layout_use_weights:
+                edge_attrs['len'] = f"{max(0.1, float(distance)):.3f}"
+            dot.edge(str(src), str(tgt), **edge_attrs)
             edges_added += 1
             
             # Progress every 10k edge pairs
@@ -1076,7 +1373,7 @@ def visualize_graph(graph: ig.Graph, vertex_attrs: Dict, output_image: str,
         dot.attr('graph', label=f'Feature Network ({num_vertices} vertices, {edges_added} unique edge pairs, {bidirectional_rendered}↔)')
         
         # Render and save
-        print(f"  [3/3] Rendering with dot (using {output_format} format)...")
+        print(f"  [3/3] Rendering with {layout_engine} (using {output_format} format)...")
         render_time_start = time.time()
         
         # Render to temporary file using clean name (avoids Graphviz dot-in-filename issues)
@@ -1356,6 +1653,128 @@ def print_analysis(analysis: Dict):
             print(f"    Max Degree: {stats['max_degree']}")
             print(f"    Min Degree: {stats['min_degree']}")
 
+def visualize_component_on_demand(graph: ig.Graph, vertex_attrs: Dict, components: List, 
+                                  component_cluster_info: Dict = None, vertex_to_cluster_map: Dict = None,
+                                  output_image_template: str = None,
+                                  layout_engine: str = 'dot',
+                                  layout_use_weights: bool = False,
+                                  clustering_method: str = None,
+                                  clustering_weight_mode: str = 'inverse'):
+    """
+    Interactive visualization mode: compute everything, then await user input to visualize specific components.
+    
+    Args:
+        graph: Full igraph Graph object
+        vertex_attrs: Dictionary of vertex attributes
+        components: List of connected components (vertex ID lists)
+        component_cluster_info: Clustering info per component (optional)
+        vertex_to_cluster_map: Vertex to cluster mapping (optional)
+        output_image_template: Template for output filenames (e.g., "output_component_{n}.svg")
+        layout_engine: Graphviz layout engine to use
+        layout_use_weights: Whether to use edge weights in layout
+        clustering_method: Clustering method used (for filename annotation)
+        clustering_weight_mode: Weight mode used (for filename annotation)
+    """
+    if not output_image_template:
+        output_image_template = "component_{n}.svg"
+    
+    print(f"\n{'='*70}")
+    print("Visualization On Demand Mode")
+    print(f"{'='*70}")
+    print(f"\nAvailable components: {len(components)}")
+    print("\nEnter component numbers to visualize (0-indexed, space-separated).")
+    print("Example: '0 5 10' to visualize components 0, 5, and 10")
+    print("Enter 'all' to visualize all components, or 'quit'/'exit' to finish.\n")
+    
+    # Build clustering suffix for filenames
+    clustering_suffix = ""
+    if clustering_method:
+        clustering_suffix = f"_{clustering_method}"
+        if component_cluster_info:  # Only add weight mode if clustering was done
+            clustering_suffix += f"_{clustering_weight_mode[:3]}"
+    
+    visualized_count = 0
+    
+    while True:
+        try:
+            user_input = input("Components to visualize: ").strip().lower()
+            
+            if user_input in ['quit', 'exit', 'q']:
+                print(f"\n✓ Visualization complete. {visualized_count} component(s) visualized.")
+                break
+            
+            if user_input == 'all':
+                component_indices = list(range(len(components)))
+            else:
+                # Parse space-separated component numbers
+                try:
+                    component_indices = [int(x) for x in user_input.split()]
+                except ValueError:
+                    print(f"  ✗ Invalid input. Please enter numbers separated by spaces.")
+                    continue
+            
+            # Validate component indices
+            valid_indices = []
+            for idx in component_indices:
+                if 0 <= idx < len(components):
+                    valid_indices.append(idx)
+                else:
+                    print(f"  ⚠ Component {idx} out of range (0-{len(components)-1})")
+            
+            if not valid_indices:
+                print(f"  ✗ No valid component indices provided.")
+                continue
+            
+            # Visualize each requested component
+            for comp_idx in valid_indices:
+                component_vertices = components[comp_idx]
+                
+                # Extract subgraph for this component
+                subgraph = graph.induced_subgraph(component_vertices)
+                
+                # Create vertex attributes for subgraph
+                sub_vertex_attrs = {new_id: vertex_attrs[orig_id] 
+                                   for new_id, orig_id in enumerate(component_vertices)}
+                
+                # Create cluster map for subgraph if available
+                sub_cluster_map = None
+                if vertex_to_cluster_map and component_cluster_info and comp_idx in component_cluster_info:
+                    sub_cluster_map = {}
+                    for new_id, orig_id in enumerate(component_vertices):
+                        if orig_id in vertex_to_cluster_map:
+                            sub_cluster_map[new_id] = vertex_to_cluster_map[orig_id]
+                
+                # Generate output filename with clustering info
+                output_image = output_image_template.format(n=comp_idx)
+                output_image = Path(output_image).parent / f"{Path(output_image).stem}_component{comp_idx}{clustering_suffix}{Path(output_image).suffix}"
+                
+                print(f"\n  Visualizing component {comp_idx} ({len(component_vertices)} vertices, {subgraph.ecount()} edges)...")
+                
+                # Visualize this component
+                success = visualize_graph(
+                    subgraph,
+                    sub_vertex_attrs,
+                    str(output_image),
+                    cluster_map=sub_cluster_map if vertex_to_cluster_map else None,
+                    component_cluster_info={comp_idx: component_cluster_info[comp_idx]} if component_cluster_info and comp_idx in component_cluster_info else None,
+                    layout_engine=layout_engine,
+                    use_cluster_subgraphs=False,
+                    layout_use_weights=layout_use_weights,
+                    use_coordinate_layout=False,
+                    vertex_coordinates=None
+                )
+                
+                if success:
+                    visualized_count += 1
+                    print(f"  ✓ Saved: {output_image}")
+        
+        except KeyboardInterrupt:
+            print(f"\n\n✓ Visualization cancelled. {visualized_count} component(s) visualized.")
+            break
+        except Exception as e:
+            print(f"  ✗ Error: {e}")
+
+
 def add_cutoff_suffix_to_filename(filename: str, edge_cutoff: float = float('inf'), 
                                    mz_cutoff: float = None, rt_cutoff: float = None,
                                    fraction: float = None) -> str:
@@ -1432,6 +1851,14 @@ def main():
     parser.add_argument("--layout_engine", type=str, default='dot',
                        choices=['dot', 'sfdp', 'fdp', 'neato', 'twopi', 'circo'],
                        help="Graphviz layout engine for visualization (default: dot)")
+    parser.add_argument("--layout_use_weights", action='store_true',
+                       help="Use edge distances to influence layout (neato/fdp/sfdp only)")
+    parser.add_argument("--use-graphviz-clusters", action='store_true',
+                       help="Group clusters into Graphviz subgraphs (default: disabled)")
+    parser.add_argument("--use-coordinate-layout", action='store_true',
+                       help="Use original feature coordinates as initial positions (neato/fdp only, requires --feature-data-jsons)")
+    parser.add_argument("--feature-data-jsons", nargs='+',
+                       help="List of feature data JSON files containing x_center, y_center coordinates for coordinate-based layout")
     
     # Clustering arguments
     parser.add_argument("--enable-clustering", action='store_true',
@@ -1439,7 +1866,20 @@ def main():
     parser.add_argument("--clustering-method", type=str, default='louvain',
                        choices=['louvain', 'walktrap', 'label_propagation', 'edge_betweenness'],
                        help="Clustering algorithm to use (default: louvain)")
+    parser.add_argument("--clustering-use-weights", action='store_true', default=True,
+                       help="Use edge distances as weights in clustering (default: enabled)")
+    parser.add_argument("--clustering-no-weights", action='store_false', dest='clustering_use_weights',
+                       help="Disable weighted clustering and use unweighted algorithms")
+    parser.add_argument("--clustering-weight-mode", type=str, default='inverse',
+                       choices=['inverse', 'distance'],
+                       help="Weight mode for clustering: inverse (1/(1+distance)) or distance (default: inverse)")
     parser.add_argument("--output-clusters-json", help="Output JSON file with cluster information")
+    
+    # Visualization on demand
+    parser.add_argument("--visualization-on-demand", action='store_true',
+                       help="Enter interactive mode after computing: visualize specific components on demand instead of full graph")
+    parser.add_argument("--component-output-template", type=str, default="component_{n}.svg",
+                       help="Template for component visualization filenames (default: component_{n}.svg)")
     
     args = parser.parse_args()
     
@@ -1537,7 +1977,11 @@ def main():
         print("Clustering Analysis")
         print("="*70)
         vertex_to_cluster_map, component_cluster_info = cluster_graph_independent_components(
-            graph, vertex_attrs, method=args.clustering_method.lower()
+            graph,
+            vertex_attrs,
+            method=args.clustering_method.lower(),
+            use_weights=args.clustering_use_weights,
+            weight_mode=args.clustering_weight_mode
         )
     else:
         print("\nClustering disabled (use --enable-clustering to enable)")
@@ -1550,6 +1994,35 @@ def main():
     output_analysis = add_cutoff_suffix_to_filename(args.output_analysis, args.edge_cutoff, args.mz_cutoff, args.rt_cutoff, args.fraction)
     output_composition = add_cutoff_suffix_to_filename(args.output_composition, args.edge_cutoff, args.mz_cutoff, args.rt_cutoff, args.fraction)
     output_histogram = add_cutoff_suffix_to_filename(args.output_histogram, args.edge_cutoff, args.mz_cutoff, args.rt_cutoff, args.fraction)
+
+    # Add layout engine to output image filename for clarity
+    if output_image and args.layout_engine:
+        image_path = Path(output_image)
+        suffix_parts = [args.layout_engine]
+        if args.layout_use_weights:
+            suffix_parts.append("lwe")
+        if args.use_coordinate_layout:
+            suffix_parts.append("crd")
+        if args.enable_clustering and args.clustering_use_weights:
+            suffix_parts.append(f"w{args.clustering_weight_mode[:3]}")
+        if args.enable_clustering and args.use_graphviz_clusters:
+            suffix_parts.append("gvcl")
+        suffix = "_" + "_".join(suffix_parts)
+        output_image = str(image_path.parent / f"{image_path.stem}{suffix}{image_path.suffix}")
+    
+    # Load feature coordinates for coordinate-based layout (if enabled)
+    vertex_coordinates = None
+    if args.use_coordinate_layout:
+        if not args.feature_data_jsons:
+            print("\\n⚠ Warning: --use-coordinate-layout specified but no --feature-data-jsons provided")
+            print("  Coordinate layout will be disabled")
+        else:
+            coord_map = load_feature_coordinates_from_jsons(args.feature_data_jsons)
+            if coord_map:
+                vertex_coordinates = map_coordinates_to_vertices(coord_map, vertex_id_map, vertex_attrs)
+            if not vertex_coordinates:
+                print("  ⚠ Warning: No valid coordinates found, disabling coordinate layout")
+                args.use_coordinate_layout = False
     
     # Save graph
     if output_graphml:
@@ -1563,23 +2036,45 @@ def main():
     
     # Save visualization (if not skipped)
     if not args.skip_visualization:
-        if output_image:
+        # Check if visualization-on-demand mode is enabled
+        if args.visualization_on_demand:
+            # Get connected components for interactive visualization
+            components = graph.components()
+            
+            # Enter interactive visualization mode
+            visualize_component_on_demand(
+                graph,
+                vertex_attrs,
+                components,
+                component_cluster_info=component_cluster_info if args.enable_clustering else None,
+                vertex_to_cluster_map=vertex_to_cluster_map if args.enable_clustering else None,
+                output_image_template=args.component_output_template,
+                layout_engine=args.layout_engine,
+                layout_use_weights=args.layout_use_weights,
+                clustering_method=args.clustering_method if args.enable_clustering else None,
+                clustering_weight_mode=args.clustering_weight_mode if args.enable_clustering else 'inverse'
+            )
+        elif output_image:
             visualize_graph(
                 graph,
                 vertex_attrs,
                 output_image,
                 cluster_map=vertex_to_cluster_map if args.enable_clustering else None,
                 component_cluster_info=component_cluster_info if args.enable_clustering else None,
-                layout_engine=args.layout_engine
+                layout_engine=args.layout_engine,
+                use_cluster_subgraphs=args.use_graphviz_clusters,
+                layout_use_weights=args.layout_use_weights,
+                use_coordinate_layout=args.use_coordinate_layout,
+                vertex_coordinates=vertex_coordinates
             )
         else:
-            print("No --output_image specified. Visualization skipped.")
+            print("No --output_image specified and --visualization-on-demand not enabled. Visualization skipped.")
     else:
         print("Skipping visualization (--skip-visualization enabled)")
     
     # Export degree distribution histogram (if not skipped)
     if output_histogram and analysis is not None:
-        export_degree_distribution_histogram(graph, vertex_attrs, output_histogram)
+        export_degree_distribution_histogram(graph, vertex_attrs, output_histogram, graph_composition=graph_composition)
     elif output_histogram and analysis is None:
         print("✗ Skipping histogram (analysis was skipped)")
     

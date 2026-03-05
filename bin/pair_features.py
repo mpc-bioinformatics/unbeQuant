@@ -163,8 +163,17 @@ def normalize_edge_distances(edges: Dict) -> Dict:
 
 def apply_postpair_coordinate_normalization(edges: Dict, all_feature_data_lists: List[List[Dict]]) -> Dict:
     """
-    Recalculate edge distances using normalized coordinates after pairing.
+    Rescale edge distances using balanced coordinate axes.
+    
+    This rescales the smaller axis to match the larger axis's range, ensuring
+    both dimensions contribute equally to distance calculations. Then calculates
+    euclidean distance in this rescaled space (no further normalization to [0,1]).
 
+    Preserves original coordinate differences while adding rescaled distance fields.
+    
+    Original coordinate differences are kept in: mz_distance, rt_distance
+    Rescaled distances are added to: mz_distance_rescaled, rt_distance_rescaled, distance_rescaled
+    
     This updates only the edge distance fields so pairing decisions remain
     unchanged when coordinate cutoffs are used.
 
@@ -173,10 +182,10 @@ def apply_postpair_coordinate_normalization(edges: Dict, all_feature_data_lists:
         all_feature_data_lists: List of feature data lists for coordinate lookup
 
     Returns:
-        Updated edges dictionary with normalized distance values
+        Updated edges dictionary with both original and rescaled distance values
     """
     if not all_feature_data_lists:
-        print("  ✗ WARNING: Feature data not provided for post-pair normalization, skipping")
+        print("  ✗ WARNING: Feature data not provided for post-pair rescaling, skipping")
         return edges
 
     all_x_values = []
@@ -187,7 +196,7 @@ def apply_postpair_coordinate_normalization(edges: Dict, all_feature_data_lists:
             all_y_values.append(f['y_center'])
 
     if not all_x_values or not all_y_values:
-        print("  ✗ WARNING: Empty feature coordinates for post-pair normalization, skipping")
+        print("  ✗ WARNING: Empty feature coordinates for post-pair rescaling, skipping")
         return edges
 
     min_x = float(np.min(all_x_values))
@@ -197,13 +206,16 @@ def apply_postpair_coordinate_normalization(edges: Dict, all_feature_data_lists:
 
     range_x = max_x - min_x if max_x > min_x else 1.0
     range_y = max_y - min_y if max_y > min_y else 1.0
-    scale_x = 1.0 / range_x if range_x > 0 else 1.0
-    scale_y = 1.0 / range_y if range_y > 0 else 1.0
+    
+    # Find the larger range and scale both axes to it
+    max_range = max(range_x, range_y)
+    scale_x = max_range / range_x if range_x > 0 else 1.0
+    scale_y = max_range / range_y if range_y > 0 else 1.0
 
-    print("  Applying post-pair coordinate normalization to edge distances...")
-    print(f"    X range: {min_x:.2f} to {max_x:.2f} (range: {range_x:.2f})")
-    print(f"    Y range: {min_y:.2f} to {max_y:.2f} (range: {range_y:.2f})")
-    print(f"    Scale factors - X: {scale_x:.6f}, Y: {scale_y:.6f}")
+    print("  Applying post-pair coordinate rescaling to edge distances...")
+    print(f"    X range: {min_x:.2f} to {max_x:.2f} (range: {range_x:.2f}, scale: {scale_x:.4f})")
+    print(f"    Y range: {min_y:.2f} to {max_y:.2f} (range: {range_y:.2f}, scale: {scale_y:.4f})")
+    print(f"    Both axes rescaled to range: {max_range:.2f}")
 
     updated_edges = {}
     updated_count = 0
@@ -241,14 +253,23 @@ def apply_postpair_coordinate_normalization(edges: Dict, all_feature_data_lists:
             ref_feature = ref_features[current_feat_idx]
             matched_feature = match_features[matched_feat_idx]
 
-            ref_x = (ref_feature['x_center'] - min_x) * scale_x
-            ref_y = (ref_feature['y_center'] - min_y) * scale_y
-            match_x = (matched_feature['x_center'] - min_x) * scale_x
-            match_y = (matched_feature['y_center'] - min_y) * scale_y
-
-            mz_distance = abs(ref_x - match_x)
-            rt_distance = abs(ref_y - match_y)
-            distance = float(np.sqrt(mz_distance ** 2 + rt_distance ** 2))
+            # Keep original coordinate differences
+            mz_distance = abs(ref_feature['x_center'] - matched_feature['x_center'])
+            rt_distance = abs(ref_feature['y_center'] - matched_feature['y_center'])
+            distance_original = float(np.sqrt(mz_distance ** 2 + rt_distance ** 2))
+            
+            # Calculate rescaled coordinates (offset + scale, but keeping range proportional)
+            ref_x_rescaled = (ref_feature['x_center'] - min_x) * scale_x
+            ref_y_rescaled = (ref_feature['y_center'] - min_y) * scale_y
+            match_x_rescaled = (matched_feature['x_center'] - min_x) * scale_x
+            match_y_rescaled = (matched_feature['y_center'] - min_y) * scale_y
+            
+            # Calculate rescaled coordinate differences
+            mz_distance_rescaled = abs(ref_x_rescaled - match_x_rescaled)
+            rt_distance_rescaled = abs(ref_y_rescaled - match_y_rescaled)
+            
+            # Calculate euclidean distance in rescaled space
+            distance_rescaled = float(np.sqrt(mz_distance_rescaled ** 2 + rt_distance_rescaled ** 2))
 
             edge_copy = edge.copy()
             if 'distance_raw' not in edge_copy:
@@ -258,16 +279,22 @@ def apply_postpair_coordinate_normalization(edges: Dict, all_feature_data_lists:
             if 'rt_distance_raw' not in edge_copy:
                 edge_copy['rt_distance_raw'] = edge_copy.get('rt_distance')
 
-            edge_copy['distance'] = distance
-            edge_copy['mz_distance'] = float(mz_distance)
-            edge_copy['rt_distance'] = float(rt_distance)
+            # Keep original distances (for build_network_graph compatibility)
+            edge_copy['distance'] = distance_original  # Original euclidean distance
+            edge_copy['mz_distance'] = float(mz_distance)  # Original m/z difference
+            edge_copy['rt_distance'] = float(rt_distance)  # Original RT difference
+            
+            # Add rescaled versions (when axes need balancing)
+            edge_copy['distance_rescaled'] = distance_rescaled  # Euclidean in rescaled space
+            edge_copy['mz_distance_rescaled'] = float(mz_distance_rescaled)
+            edge_copy['rt_distance_rescaled'] = float(rt_distance_rescaled)
 
             updated_list.append(edge_copy)
             updated_count += 1
 
         updated_edges[file_idx] = updated_list
 
-    print(f"  Post-pair normalization updated {updated_count} edges, skipped {skipped_count}")
+    print(f"  Post-pair rescaling updated {updated_count} edges, skipped {skipped_count}")
     return updated_edges
 
 
@@ -984,7 +1011,7 @@ def main():
     parser.add_argument("--rt_cutoff", type=float, default=None, help="Maximum RT (y-axis) coordinate difference for edge filtering")
     parser.add_argument("--distance_calc_before_scaling", action='store_true', help="Calculate distance before coordinate scaling (default: after scaling)")
     parser.add_argument("--normalize_coordinates", type=lambda x: x.lower() in ('true', '1', 'yes'), nargs='?', const=True, default=None, help="Enable/disable coordinate normalization before KD-tree matching (default: auto - OFF for mz/rt cutoff, ON for euclidean cutoff)")
-    parser.add_argument("--postpair_normalize_coordinates", action='store_true', help="Recalculate edge distances using normalized coordinates after pairing (does not affect pairing or cutoffs)(carefull, makes distances relative to normalized space, not original coordinates)")
+    parser.add_argument("--postpair_normalize_coordinates", action='store_true', help="Rescale axes to balance coordinate ranges and recalculate distances (adds rescaled distance fields; original distances preserved)")
     parser.add_argument("--normalize_edge_distances", action='store_true', help="Normalize edge distances to [0, 1] range for visualization (default: disabled)")
     parser.add_argument("--analyze_pep_idents", action='store_true', help="Perform detailed pep_ident matching analysis (default: enabled)")
     parser.add_argument("--skip_json_output", action='store_true', help="Skip JSON serialization for speed (default: disabled - JSON output enabled)")
@@ -1345,6 +1372,7 @@ def main():
             'distance_calc_before_scaling': args.distance_calc_before_scaling,
             'normalize_coordinates': normalize_coordinates,
             'postpair_normalize_coordinates': args.postpair_normalize_coordinates,
+            'postpair_note': 'If postpair_normalize_coordinates=true: distance/mz_distance/rt_distance are original values; rescaled versions in *_rescaled fields',
             'match_cutoff': args.match_cutoff,
             'input_files': len(feature_files),
             'skip_matchfinder': args.skip_matchfinder
