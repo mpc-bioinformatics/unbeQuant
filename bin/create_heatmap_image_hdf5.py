@@ -793,9 +793,13 @@ def generate_heatmap_report(png_path: str, hdf5_path: str, basename: str,
             // Handle click events on features
             document.getElementById('featureBoxesPlotly').on('plotly_click', function(eventData) {{
                 const point = eventData.points[0];
-                const infoDiv = document.getElementById("featureInfoTooltip");
-                infoDiv.innerHTML = "<button onclick=\"document.getElementById('featureInfoTooltip').style.display='none';\" style=\"float: right; background: none; border: none; font-size: 1.2em; cursor: pointer; padding: 0; margin: 0;\">×</button><div style=\"clear: both; margin-top: 8px;\">" + point.customdata + "</div>";
-                infoDiv.style.display = "block";
+                const infoDiv = document.getElementById('featureInfoTooltip');
+                let btnHtml = '<button onclick="';
+                btnHtml += 'document.getElementById(' + String.fromCharCode(39) + 'featureInfoTooltip' + String.fromCharCode(39) + ').style.display=' + String.fromCharCode(39) + 'none' + String.fromCharCode(39);
+                btnHtml += ';" style="float: right; background: none; border: none; font-size: 1.2em; cursor: pointer; padding: 0; margin: 0;">×</button>';
+                const contentDiv = '<div style="clear: both; margin-top: 8px;">' + point.customdata + '</div>';
+                infoDiv.innerHTML = btnHtml + contentDiv;
+                infoDiv.style.display = 'block';
             }});
             
             window.addEventListener('resize', function() {{
