@@ -862,7 +862,7 @@ def cluster_graph_independent_components(graph: ig.Graph, vertex_attrs: Dict,
     Args:
         graph: igraph Graph object
         vertex_attrs: Dictionary of vertex attributes
-        method: Clustering method ('louvain', 'walktrap', 'label_propagation', 'edge_betweenness')
+        method: Clustering method ('louvain', 'walktrap', 'label_propagation', 'edge_betweenness', 'leiden', 'spinglass')
     
     Returns:
         Tuple of (vertex_to_cluster_map, component_cluster_info)
@@ -909,6 +909,8 @@ def cluster_graph_independent_components(graph: ig.Graph, vertex_attrs: Dict,
 
             if method.lower() == 'louvain':
                 clustering = subgraph.community_multilevel(weights=weights) if use_weights else subgraph.community_multilevel()
+            elif method.lower() == 'leiden':
+                clustering = subgraph.community_leiden(weights=weights, objective_function='modularity') if use_weights else subgraph.community_leiden(objective_function='modularity')
             elif method.lower() == 'walktrap':
                 clustering = subgraph.community_walktrap(weights=weights).as_clustering() if use_weights else subgraph.community_walktrap().as_clustering()
             elif method.lower() == 'label_propagation':
@@ -918,6 +920,8 @@ def cluster_graph_independent_components(graph: ig.Graph, vertex_attrs: Dict,
                 if use_weights and weight_mode == 'inverse':
                     betweenness_weights = _compute_cluster_edge_weights(subgraph, 'distance')
                 clustering = subgraph.community_edge_betweenness(weights=betweenness_weights).as_clustering() if use_weights else subgraph.community_edge_betweenness().as_clustering()
+            elif method.lower() == 'spinglass':
+                clustering = subgraph.community_spinglass(weights=weights) if use_weights else subgraph.community_spinglass()
             else:
                 print(f"  ✗ Unknown clustering method: {method}. Using Louvain.")
                 clustering = subgraph.community_multilevel()
@@ -1864,7 +1868,7 @@ def main():
     parser.add_argument("--enable-clustering", action='store_true',
                        help="Enable clustering on connected components (detects sub-groups in graphs)")
     parser.add_argument("--clustering-method", type=str, default='louvain',
-                       choices=['louvain', 'walktrap', 'label_propagation', 'edge_betweenness'],
+                       choices=['louvain', 'walktrap', 'label_propagation', 'edge_betweenness', 'leiden', 'spinglass'],
                        help="Clustering algorithm to use (default: louvain)")
     parser.add_argument("--clustering-use-weights", action='store_true', default=True,
                        help="Use edge distances as weights in clustering (default: enabled)")
