@@ -115,40 +115,50 @@ if __name__ == "__main__":
 
 
     ### PLOT minlh ESTIMATIONS
-
-
     with open(args.tsv_file, 'r') as f:
         # Read TSV and get relevant columns
         reader = csv.reader(f, delimiter='\t')
         all_headers = next(reader)
         rts_idcs = [idx for idx, h in enumerate(all_headers) if h.endswith("_____l_retention_times")]
+        intens_idcs = [idx for idx, h in enumerate(all_headers) if h.endswith("_____l_intensities")]
         files = [all_headers[rt_idx].replace("_____l_retention_times", "") for rt_idx in rts_idcs]
         ms2s_idcs = [all_headers.index(f + "_____l_ms2_scans") for f in files]
         raw_peps_idcs = [all_headers.index(f + "_____l_raw_pep_ident") for f in files]
 
         # Get data for minlh estimation
         all_count = np.zeros(args.minlh_up_to, dtype=int)
-        all_count_first_iso = np.zeros(args.minlh_up_to, dtype=int)
         ms2s_count = np.zeros(args.minlh_up_to, dtype=int)
-        ms2s_count_first_iso = np.zeros(args.minlh_up_to, dtype=int)
         no_ms2s_count = np.zeros(args.minlh_up_to, dtype=int)
-        no_ms2s_count_first_iso = np.zeros(args.minlh_up_to, dtype=int)
         ident_count = np.zeros(args.minlh_up_to, dtype=int)
-        ident_count_first_iso = np.zeros(args.minlh_up_to, dtype=int)
         unident_count = np.zeros(args.minlh_up_to, dtype=int)
-        unident_count_first_iso = np.zeros(args.minlh_up_to, dtype=int)
+        all_sum_intensities = np.zeros(args.minlh_up_to, dtype=float)
+        all_mean_intensities = np.zeros(args.minlh_up_to, dtype=float)
+        all_mean_intensities_count = np.zeros(args.minlh_up_to, dtype=float)
+        ms2_sum_intensities = np.zeros(args.minlh_up_to, dtype=float)
+        no_ms2_sum_intensities = np.zeros(args.minlh_up_to, dtype=float)
+        ms2_mean_intensities = np.zeros(args.minlh_up_to, dtype=float)
+        no_ms2_mean_intensities = np.zeros(args.minlh_up_to, dtype=float)
+        ms2_mean_intensities_count = np.zeros(args.minlh_up_to, dtype=float)
+        no_ms2_mean_intensities_count = np.zeros(args.minlh_up_to, dtype=float)
+        ident_sum_intensities = np.zeros(args.minlh_up_to, dtype=float)
+        no_ident_sum_intensities = np.zeros(args.minlh_up_to, dtype=float)
+        ident_mean_intensities = np.zeros(args.minlh_up_to, dtype=float)
+        no_ident_mean_intensities = np.zeros(args.minlh_up_to, dtype=float)
+        ident_mean_intensities_count = np.zeros(args.minlh_up_to, dtype=float)
+        no_ident_mean_intensities_count = np.zeros(args.minlh_up_to, dtype=float)
+
         count_traces = 0
         count_features = 0
         for row in reader:
-            for rt_idx, ms2s_idx, raw_pep_idx in zip(rts_idcs, ms2s_idcs, raw_peps_idcs):
-                # Get RTs
+            for rt_idx, ms2s_idx, raw_pep_idx, intens_idx in zip(rts_idcs, ms2s_idcs, raw_peps_idcs, intens_idcs):
+                # Get traces and check for idents if any
                 if row[rt_idx]:
                     rts = literal_eval(row[rt_idx])
+                    its = literal_eval(row[intens_idx])
                     count_features += 1
                     # Check if it contains an MS2
                     is_with_ms2 = False
                     if row[ms2s_idx]:
-                        
                         ms2s_set = set(literal_eval(row[ms2s_idx]))
                         is_with_ms2 = len(ms2s_set) > 0
                     # Check if it is identified:
@@ -158,30 +168,47 @@ if __name__ == "__main__":
                         is_ident = len(raw_pep_set) > 0
 
                     # For all traces
-                    all_count_first_iso[:len(rts[0])+1] += 1
-                    for rt_list in rts:
+                    for rt_list, intens_list in zip(rts, its):
                         count_traces += 1
                         all_count[:len(rt_list)+1] += 1
+                        # Get Trapezoidal sum of intensities for the trace
+                        all_sum_intensities[:len(rt_list)+1] += np.trapz(intens_list, rt_list)
+                        all_mean_intensities[:len(rt_list)+1] += np.trapz(intens_list, rt_list)
+                        all_mean_intensities_count[:len(rt_list)+1] += 1  # will be divided later to get the mean
 
                     # For MS2s
                     if is_with_ms2:
-                        ms2s_count_first_iso[:len(rts[0])+1] += 1
-                        for rt_list in rts:
+                        for rt_list, intens_list in zip(rts, its):
                             ms2s_count[:len(rt_list)+1] += 1
+                            ms2_sum_intensities[:len(rt_list)+1] += np.trapz(intens_list, rt_list)
+                            ms2_mean_intensities[:len(rt_list)+1] += np.trapz(intens_list, rt_list)
+                            ms2_mean_intensities_count[:len(rt_list)+1] += 1  # will be divided later to get the mean
                     else:
-                        no_ms2s_count_first_iso[:len(rts[0])+1] += 1
-                        for rt_list in rts:
+                        for rt_list, intens_list in zip(rts, its):
                             no_ms2s_count[:len(rt_list)+1] += 1
+                            no_ms2_sum_intensities[:len(rt_list)+1] += np.trapz(intens_list, rt_list)
+                            no_ms2_mean_intensities[:len(rt_list)+1] += np.trapz(intens_list, rt_list)
+                            no_ms2_mean_intensities_count[:len(rt_list)+1] += 1  # will be divided later to get the mean
                     
                     # For identification status
                     if is_ident:
-                        ident_count_first_iso[:len(rts[0])+1] += 1
-                        for rt_list in rts:
+                        for rt_list, intens_list in zip(rts, its):
                             ident_count[:len(rt_list)+1] += 1
+                            ident_sum_intensities[:len(rt_list)+1] += np.trapz(intens_list, rt_list)
+                            ident_mean_intensities[:len(rt_list)+1] += np.trapz(intens_list, rt_list)
+                            ident_mean_intensities_count[:len(rt_list)+1] += 1  # will be divided later to get the mean
                     else:
-                        unident_count_first_iso[:len(rts[0])+1] += 1
-                        for rt_list in rts:
+                        for rt_list, intens_list in zip(rts, its):
                             unident_count[:len(rt_list)+1] += 1
+                            no_ident_sum_intensities[:len(rt_list)+1] += np.trapz(intens_list, rt_list)
+                            no_ident_mean_intensities[:len(rt_list)+1] += np.trapz(intens_list, rt_list)
+                            no_ident_mean_intensities_count[:len(rt_list)+1] += 1  # will be divided later to get the mean
+        # Get mean intensities
+        all_mean_intensities = all_mean_intensities / all_mean_intensities_count
+        ms2_mean_intensities = ms2_mean_intensities / ms2_mean_intensities_count
+        no_ms2_mean_intensities = no_ms2_mean_intensities / no_ms2_mean_intensities_count
+        ident_mean_intensities = ident_mean_intensities / ident_mean_intensities_count
+        no_ident_mean_intensities = no_ident_mean_intensities / no_ident_mean_intensities_count
 
         # Plot MS2s
         df = pd.DataFrame({
@@ -232,3 +259,105 @@ if __name__ == "__main__":
                 annotation_font_color="blue"
             )
         fig.write_html(os.path.join(args.output_folder_plots, "unbequant_minlh_estimations_identifications.html"))
+
+
+        # Plot Sum Intensities of features (identified vs unidentified)
+        df = pd.DataFrame({
+            "All Traces Sum Intensity": all_sum_intensities[:100],
+            "Identified Traces Sum Intensity": ident_sum_intensities[:100],
+            "Unidentified Traces Sum Intensity": no_ident_sum_intensities[:100],
+            "index": range(len(all_sum_intensities))[:100],
+        })
+        melt_df = df.melt(id_vars=["index"])
+
+        fig = px.scatter(melt_df, x="index", y="value", color="variable",
+                        title=f"Estimated 'minlh' for > {args.minlh_parameter} split by Identification status. Number of found traces: {count_traces}. Number of found features: {count_features}",
+                        labels={"index": "minlh-Parameter", "value": "Sum Intensity", "variable": "Identification Status"}
+        )
+        fig.add_vline(x=args.minlh_parameter, line_dash="dash", line_color="red", annotation_position="top right",
+            annotation_text=f"minlh-parameter: {args.minlh_parameter} ",
+            annotation_font_color="red"
+        )
+        to_pt = np.argmax(ident_sum_intensities > no_ident_sum_intensities)
+        if to_pt > 0:
+            fig.add_vline(x=to_pt, line_dash="dash", line_color="blue",
+                annotation_text=f"Trade-Off at {to_pt} ", annotation_position="bottom right",
+                annotation_font_color="blue"
+            )
+        fig.write_html(os.path.join(args.output_folder_plots, "unbequant_minlh_estimations_sum_intensities_identifications.html"))
+
+        # Plot Sum Intensities of features (ms2 vs no ms2)
+        df = pd.DataFrame({
+            "All Traces Sum Intensity": all_sum_intensities[:100],
+            "MS2 Traces Sum Intensity": ms2_sum_intensities[:100],
+            "No MS2 Traces Sum Intensity": no_ms2_sum_intensities[:100],
+            "index": range(len(all_sum_intensities))[:100],
+        })
+        melt_df = df.melt(id_vars=["index"])
+
+        fig = px.scatter(melt_df, x="index", y="value", color="variable",
+                        title=f"Estimated 'minlh' for > {args.minlh_parameter} split by MS2 status. Number of found traces: {count_traces}. Number of found features: {count_features}",
+                        labels={"index": "minlh-Parameter", "value": "Sum Intensity", "variable": "MS2 Status"}
+        )
+        fig.add_vline(x=args.minlh_parameter, line_dash="dash", line_color="red", annotation_position="top right",
+            annotation_text=f"minlh-parameter: {args.minlh_parameter} ",
+            annotation_font_color="red"
+        )
+        to_pt = np.argmax(ms2_sum_intensities > no_ms2_sum_intensities)
+        if to_pt > 0:
+            fig.add_vline(x=to_pt, line_dash="dash", line_color="blue",
+                annotation_text=f"Trade-Off at {to_pt} ", annotation_position="bottom right",
+                annotation_font_color="blue"
+            )
+        fig.write_html(os.path.join(args.output_folder_plots, "unbequant_minlh_estimations_sum_intensities_ms2.html"))
+
+
+        # Plot Mean Intensities of features (identified vs unidentified)
+        df = pd.DataFrame({
+            "All Traces Mean Intensity": all_mean_intensities[:100],
+            "Identified Traces Mean Intensity": ident_mean_intensities[:100],
+            "Unidentified Traces Mean Intensity": no_ident_mean_intensities[:100],
+            "index": range(len(all_mean_intensities))[:100],
+        })
+        melt_df = df.melt(id_vars=["index"])
+
+        fig = px.scatter(melt_df, x="index", y="value", color="variable",
+                        title=f"Estimated 'minlh' for > {args.minlh_parameter} split by Identification status. Number of found traces: {count_traces}. Number of found features: {count_features}",
+                        labels={"index": "minlh-Parameter", "value": "Mean Intensity", "variable": "Identification Status"}
+        )
+        fig.add_vline(x=args.minlh_parameter, line_dash="dash", line_color="red", annotation_position="top right",
+            annotation_text=f"minlh-parameter: {args.minlh_parameter} ",
+            annotation_font_color="red"
+        )
+        to_pt = np.argmax(ident_mean_intensities > no_ident_mean_intensities)
+        if to_pt > 0:
+            fig.add_vline(x=to_pt, line_dash="dash", line_color="blue",
+                annotation_text=f"Trade-Off at {to_pt} ", annotation_position="bottom right",
+                annotation_font_color="blue"
+            )
+        fig.write_html(os.path.join(args.output_folder_plots, "unbequant_minlh_estimations_mean_intensities_identifications.html"))
+
+        # Plot Mean Intensities of features (ms2 vs no ms2)
+        df = pd.DataFrame({
+            "All Traces Mean Intensity": all_mean_intensities[:100],
+            "MS2 Traces Mean Intensity": ms2_mean_intensities[:100],
+            "No MS2 Traces Mean Intensity": no_ms2_mean_intensities[:100],
+            "index": range(len(all_mean_intensities))[:100],
+        })
+        melt_df = df.melt(id_vars=["index"])
+
+        fig = px.scatter(melt_df, x="index", y="value", color="variable",
+                        title=f"Estimated 'minlh' for > {args.minlh_parameter} split by MS2 status. Number of found traces: {count_traces}. Number of found features: {count_features}",
+                        labels={"index": "minlh-Parameter", "value": "Mean Intensity", "variable": "MS2 Status"}
+        )
+        fig.add_vline(x=args.minlh_parameter, line_dash="dash", line_color="red", annotation_position="top right",
+            annotation_text=f"minlh-parameter: {args.minlh_parameter} ",
+            annotation_font_color="red"
+        )
+        to_pt = np.argmax(ms2_mean_intensities > no_ms2_mean_intensities)
+        if to_pt > 0:
+            fig.add_vline(x=to_pt, line_dash="dash", line_color="blue",
+                annotation_text=f"Trade-Off at {to_pt} ", annotation_position="bottom right",
+                annotation_font_color="blue"
+            )
+        fig.write_html(os.path.join(args.output_folder_plots, "unbequant_minlh_estimations_mean_intensities_ms2.html"))
