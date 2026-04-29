@@ -1,0 +1,84 @@
+# Nextflow working directories and caches
+work/
+.nextflow/
+.nextflow.log*
+timeline.html
+trace.txt
+report.html
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project specific
+results/
+Component_Graphs/
+*.png
+*.jpg
+*.svg
+*.graphml
+${heatmap_image}
+
+#input files
+workspaces/
+unbeQuant/
+files/
+old/
+*raw
+
+workspaces/
+unbeQuant/
+files/
+raws/
+*raw
+
+workspaces/
+unbeQuant/
+results/
+
+
+/workspaces/unbeQuant/.nextflow/
+/workspaces/unbeQuant/work/
+/workspaces/unbeQuant/xic-extractor/
+/workspaces/unbeQuant/Component_Graphs/
+/workspaces/unbeQuant/ProGFASTAGen/
+/workspaces/unbeQuant/alignment_testfiles/
+
+# Project specific
+results/
+Component_Graphs/
+*.png
+*.jpg
+*.svg
+*.graphml
+${heatmap_image}
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
