@@ -10,9 +10,6 @@ import json
 import numpy as np
 import os
 import sys
-import gc
-import tracemalloc
-import psutil
 from pathlib import Path
 from typing import Dict, List, Tuple
 from scipy.spatial import cKDTree
@@ -49,30 +46,6 @@ except ImportError:
     class PiecewisePolynomial:
         """Piecewise polynomial model that can be pickled (fallback)."""
         pass
-
-
-def get_memory_info(label="", print_details=False):
-    """Get current memory usage and return human-readable info."""
-    process = psutil.Process(os.getpid())
-    mem_info = process.memory_info()
-    mem_mb = mem_info.rss / (1024 * 1024)
-    
-    if print_details:
-        try:
-            if not tracemalloc.is_tracing():
-                tracemalloc.start()
-            tracemalloc.take_snapshot()
-        except:
-            pass
-        print(f"[DEBUG MEMORY] {label}")
-        print(f"  RSS (total physical): {mem_mb:.1f} MB")
-        try:
-            percent = process.memory_percent()
-            print(f"  Memory percent: {percent:.1f}%")
-        except:
-            pass
-    
-    return mem_mb
 
 
 def build_trafoxmls_fid_dict(trafoxmls_dir: str) -> Dict[str, float]:
@@ -451,11 +424,10 @@ def filter_edges_by_coordinate_cutoffs(edges: Dict, mz_cutoff: float, rt_cutoff:
         for edge in edge_list:
             try:
                 # Look up the feature data using indices
-                # Handle both index-based format (during pairing) and restored format (after JSON restoration)
                 ref_file_idx = edge.get('ref_file_idx')
                 match_file_idx = edge.get('match_file_idx')
-                current_feat_idx = edge.get('current_feature_idx', edge.get('current_file', {}).get('feature_idx'))
-                matched_feat_idx = edge.get('matched_feature_idx', edge.get('matched_file', {}).get('feature_idx'))
+                current_feat_idx = edge.get('current_file', {}).get('feature_idx')
+                matched_feat_idx = edge.get('matched_file', {}).get('feature_idx')
                 
                 # Validate indices are within bounds
                 if (ref_file_idx is None or match_file_idx is None or 
@@ -562,10 +534,10 @@ def apply_postpair_coordinate_normalization(edges: Dict, all_feature_data_lists:
     both dimensions contribute equally to distance calculations. Then calculates
     euclidean distance in this rescaled space (no further normalization to [0,1]).
 
-    Preserves original coordinate distances while adding rescaled distance fields.
+    Preserves original coordinate differences while adding rescaled distance fields.
     
-    Original distance is kept in: distance
-    Rescaled distance is added to: distance_rescaled
+    Original coordinate differences are kept in: mz_distance, rt_distance
+    Rescaled distances are added to: mz_distance_rescaled, rt_distance_rescaled, distance_rescaled
     
     This updates only the edge distance fields so pairing decisions remain
     unchanged when coordinate cutoffs are used.
@@ -575,7 +547,7 @@ def apply_postpair_coordinate_normalization(edges: Dict, all_feature_data_lists:
         all_feature_data_lists: List of feature data lists for coordinate lookup
 
     Returns:
-        Updated edges dictionary with original and rescaled distance values
+        Updated edges dictionary with both original and rescaled distance values
     """
     if not all_feature_data_lists:
         print("  ✗ WARNING: Feature data not provided for post-pair rescaling, skipping")
@@ -619,9 +591,8 @@ def apply_postpair_coordinate_normalization(edges: Dict, all_feature_data_lists:
         for edge in edge_list:
             ref_file_idx = edge.get('ref_file_idx')
             match_file_idx = edge.get('match_file_idx')
-            # Handle both index-based format (during pairing) and restored format (after JSON restoration)
-            current_feat_idx = edge.get('current_feature_idx', edge.get('current_file', {}).get('feature_idx'))
-            matched_feat_idx = edge.get('matched_feature_idx', edge.get('matched_file', {}).get('feature_idx'))
+            current_feat_idx = edge.get('current_file', {}).get('feature_idx')
+            matched_feat_idx = edge.get('matched_file', {}).get('feature_idx')
 
             if (ref_file_idx is None or match_file_idx is None or
                 current_feat_idx is None or matched_feat_idx is None):
@@ -668,12 +639,20 @@ def apply_postpair_coordinate_normalization(edges: Dict, all_feature_data_lists:
             edge_copy = edge.copy()
             if 'distance_raw' not in edge_copy:
                 edge_copy['distance_raw'] = edge_copy.get('distance')
+            if 'mz_distance_raw' not in edge_copy:
+                edge_copy['mz_distance_raw'] = edge_copy.get('mz_distance')
+            if 'rt_distance_raw' not in edge_copy:
+                edge_copy['rt_distance_raw'] = edge_copy.get('rt_distance')
 
-            # Update distance to original euclidean distance
-            edge_copy['distance'] = distance_original
+            # Keep original distances (for build_network_graph compatibility)
+            edge_copy['distance'] = distance_original  # Original euclidean distance
+            edge_copy['mz_distance'] = float(mz_distance)  # Original m/z difference
+            edge_copy['rt_distance'] = float(rt_distance)  # Original RT difference
             
             # Add rescaled versions (when axes need balancing)
             edge_copy['distance_rescaled'] = distance_rescaled  # Euclidean in rescaled space
+            edge_copy['mz_distance_rescaled'] = float(mz_distance_rescaled)
+            edge_copy['rt_distance_rescaled'] = float(rt_distance_rescaled)
 
             updated_list.append(edge_copy)
             updated_count += 1
@@ -700,9 +679,6 @@ def _build_connected_components_from_edges(edges: Dict, file_features_list: List
     """
     from collections import defaultdict
     
-    print("[DEBUG_CC] Entering _build_connected_components_from_edges...")
-    mem_cc_start = get_memory_info("CC START", print_details=True)
-    
     # Union-Find for fast grouping
     parent = {}
     
@@ -723,23 +699,12 @@ def _build_connected_components_from_edges(edges: Dict, file_features_list: List
     neighbors = defaultdict(dict)  # neighbors[v1][v2] = distance
     all_vertices = set()
     
-    print("[DEBUG_CC] Starting edge processing loop...")
     # Single pass through edges: union vertices and store distances + neighbors
     for ref_file_idx, edge_list in edges.items():
-        print(f"[DEBUG_CC]   Processing file_idx {ref_file_idx}, {len(edge_list)} edges")
-        for edge_num, edge in enumerate(edge_list):
-            if edge_num % 100000 == 0 and edge_num > 0:
-                print(f"[DEBUG_CC]     Processed {edge_num}/{len(edge_list)} edges...")
-            # Handle both index-based format (during pairing) and restored format (after JSON restoration)
-            # Index-based: 'current_feature_idx', restored: 'current_file'['feature_idx']
-            v1_file = edge.get('current_file_idx', edge.get('ref_file_idx'))
-            v1_feat = edge.get('current_feature_idx', edge.get('current_file', {}).get('feature_idx'))
-            v2_file = edge.get('matched_file_idx', edge.get('match_file_idx'))
-            v2_feat = edge.get('matched_feature_idx', edge.get('matched_file', {}).get('feature_idx'))
-            
-            v1 = (v1_file, v1_feat)
-            v2 = (v2_file, v2_feat)
-            distance = edge.get('distance', 0)
+        for edge in edge_list:
+            v1 = (edge['ref_file_idx'], edge['current_file']['feature_idx'])
+            v2 = (edge['match_file_idx'], edge['matched_file']['feature_idx'])
+            distance = edge['distance']
             
             all_vertices.add(v1)
             all_vertices.add(v2)
@@ -752,35 +717,21 @@ def _build_connected_components_from_edges(edges: Dict, file_features_list: List
             neighbors[v1][v2] = distance
             neighbors[v2][v1] = distance
     
-    print(f"[DEBUG_CC] Edge processing complete. all_vertices: {len(all_vertices)}, neighbors entries: {len(neighbors)}")
-    mem_after_edge_proc = get_memory_info("CC AFTER EDGE PROCESSING", print_details=True)
-    print(f"[DEBUG_CC] Memory delta after edge processing: {mem_after_edge_proc - mem_cc_start:.1f} MB")
-    
     # Group vertices by their root (component)
-    print("[DEBUG_CC] Grouping vertices by component...")
     components = defaultdict(set)
     for vertex in all_vertices:
         root = find(vertex)
         components[root].add(vertex)
-
+    
     components = list(components.values())
-    print(f"[DEBUG_CC] Component grouping complete. Total components: {len(components)}")
-    mem_after_grouping = get_memory_info("CC AFTER GROUPING", print_details=True)
-    print(f"[DEBUG_CC] Memory delta after grouping: {mem_after_grouping - mem_after_edge_proc:.1f} MB")
     
     # Build consolidated match entries for each component
     matches = []
     total_components = len(components)
-    print("[DEBUG_CC] Starting component consolidation...")
-    mem_before_consolidation = get_memory_info("CC BEFORE CONSOLIDATION", print_details=True)
     
     for comp_idx, component_vertices in enumerate(components):
         if comp_idx % max(1, total_components // 10) == 0:
-            if comp_idx > 0:
-                mem_now = get_memory_info(f"CC CONSOLIDATION {comp_idx}/{total_components}", print_details=False)
-                print(f"    Processing component {comp_idx+1}/{total_components} (mem: {mem_now:.1f} MB)", end='\r', flush=True)
-            else:
-                print(f"    Processing component {comp_idx+1}/{total_components}", end='\r', flush=True)
+            print(f"    Processing component {comp_idx+1}/{total_components}", end='\r')
         
         # Collect all features in this component with metadata for quick lookups
         component_features = []
@@ -822,13 +773,13 @@ def _build_connected_components_from_edges(edges: Dict, file_features_list: List
             
             # Only iterate through neighbors that this feature actually has edges to
             if v_current in neighbors:
-                for v_neighbor, neighbor_distance in neighbors[v_current].items():
+                for v_neighbor, distance in neighbors[v_current].items():
                     # Confirm neighbor is in this component (should always be true)
                     if v_neighbor in vertex_to_feature_idx:
                         other_feat_idx = vertex_to_feature_idx[v_neighbor]
                         neighbor_feature = component_features[other_feat_idx]
                         other_key = f"{neighbor_feature['filename']}_feat{v_neighbor[1]}"
-                        distances_to_others[other_key] = float(neighbor_distance)
+                        distances_to_others[other_key] = float(distance)
             
             feature_entry['distances_to_group_features'] = distances_to_others
             featured_entries.append(feature_entry)
@@ -857,50 +808,46 @@ def _build_connected_components_from_edges(edges: Dict, file_features_list: List
         matches.append(match)
     
     print(f"\n  ✓ Built {len(matches)} connected component groups")
-    mem_cc_end = get_memory_info("CC END", print_details=True)
-    print(f"[DEBUG_CC] Total memory delta in CC function: {mem_cc_end - mem_cc_start:.1f} MB")
     return matches
 
 
 def extract_and_save_unpaired_vertices(network_edges: Dict, all_feature_data_lists: List[List[Dict]], output_path: str = None) -> List[Dict]:
     """
-    Extract vertices that have no edges in the network (unpaired), and save to JSON.
-    
-    Compares all vertices in all_feature_data_lists with vertices appearing in network_edges.
-    Any vertex NOT present in network_edges is marked as unpaired.
+    Extract vertices that have no edges (unpaired features) and save to JSON.
     
     Args:
         network_edges: Dictionary {ref_file_idx: [edge_dict, ...]}
         all_feature_data_lists: List of feature lists from each file
-        output_path: Optional path to save unpaired vertices JSON (if None, only returns list)
+        output_path: Optional path to save unpaired vertices JSON
     
     Returns:
         List of unpaired vertex dictionaries
     """
+    if not output_path:
+        return []
     
     # Build set of all vertices that appear in edges (fast O(n) operation)
-    # This is the ONLY way to determine if a vertex is paired or not
     paired_vertex_ids = set()
     
     for file_idx, edge_list in network_edges.items():
         for edge in edge_list:
-            # Handle both index-based format (during pairing) and restored format (after JSON restoration)
-            current_file_idx = edge.get('current_file_idx', edge.get('ref_file_idx'))
-            current_feat_idx = edge.get('current_feature_idx', edge.get('current_file', {}).get('feature_idx'))
+            # Add both current and matched vertices
+            current_file_idx = edge['ref_file_idx']
+            current_feat_idx = edge['current_file']['feature_idx']
             paired_vertex_ids.add((current_file_idx, current_feat_idx))
             
-            match_file_idx = edge.get('matched_file_idx', edge.get('match_file_idx'))
-            match_feat_idx = edge.get('matched_feature_idx', edge.get('matched_file', {}).get('feature_idx'))
+            match_file_idx = edge['match_file_idx']
+            match_feat_idx = edge['matched_file']['feature_idx']
             paired_vertex_ids.add((match_file_idx, match_feat_idx))
     
-    # Find all unpaired vertices by comparing with all_feature_data_lists
+    # Find all unpaired vertices (features not in any edge)
     unpaired_vertices = []
     
     for file_idx, features in enumerate(all_feature_data_lists):
         for feat_idx, feature in enumerate(features):
             vertex_id = (file_idx, feat_idx)
             
-            # Include if this vertex does NOT appear in any edge in network_edges
+            # If this vertex never appeared in any edge, it's unpaired
             if vertex_id not in paired_vertex_ids:
                 unpaired_vertex = {
                     'vertex_id': f"{feature.get('filename', f'file_{file_idx}')}_{feat_idx}",
@@ -922,8 +869,8 @@ def extract_and_save_unpaired_vertices(network_edges: Dict, all_feature_data_lis
                 }
                 unpaired_vertices.append(unpaired_vertex)
     
-    # Save to JSON (only if output_path is provided)
-    if output_path and unpaired_vertices:
+    # Save to JSON
+    if unpaired_vertices:
         try:
             with open(output_path, 'w') as f:
                 json.dump({
@@ -931,16 +878,15 @@ def extract_and_save_unpaired_vertices(network_edges: Dict, all_feature_data_lis
                     'unpaired_vertices': unpaired_vertices
                 }, f, indent=2)
             print(f"\n[PROGRESS] Saved {len(unpaired_vertices)} unpaired vertices to: {os.path.basename(output_path)}")
-            print(f"  ℹ Unpaired vertices are features that appear in all_feature_data but have no edges in network_edges")
         except Exception as e:
             print(f"✗ Warning: Could not save unpaired vertices to {output_path}: {e}")
-    elif not unpaired_vertices:
-        print(f"\n[PROGRESS] No unpaired vertices found (all features have at least one edge)")
+    else:
+        print(f"\n[PROGRESS] No unpaired vertices found (all features were paired or removed by filtering)")
     
     return unpaired_vertices
 
 
-def feature_pairing_optimized(all_feature_data_lists: List[List[Dict]], best_match_only: bool = False, skip_match_building: bool = False, normalize_coordinates: bool = True, distance_calc_before_scaling: bool = False, rt_correction_json: str = None, rt_correction_mode: str = 'none', rt_source: str = 'rt_start', mz_rt_weight_ratio: float = 1.0, mz_cutoff: float = None, rt_cutoff: float = None, edges_cutoff: float = None) -> tuple:
+def feature_pairing_optimized(all_feature_data_lists: List[List[Dict]], best_match_only: bool = False, skip_match_building: bool = False, normalize_coordinates: bool = True, distance_calc_before_scaling: bool = False, rt_correction_json: str = None, rt_correction_mode: str = 'none', rt_source: str = 'rt_start', mz_rt_weight_ratio: float = 1.0) -> tuple:
     """
     Optimized feature pairing using KD-trees and vectorized operations.
     Much faster for large datasets with multiple files.
@@ -966,13 +912,7 @@ def feature_pairing_optimized(all_feature_data_lists: List[List[Dict]], best_mat
             - > 1.0: RT weighs more than m/z (RT more important)
     """
     if not all_feature_data_lists:
-        return [], {}, {}
-    
-    # Build file index → filename mapping for memory optimization
-    file_index_map = {}
-    for file_idx, features in enumerate(all_feature_data_lists):
-        if features and len(features) > 0:
-            file_index_map[file_idx] = features[0].get('filename', f'file_{file_idx}')
+        return [], {}
     
     if len(all_feature_data_lists) == 1:
         matches = []
@@ -982,7 +922,7 @@ def feature_pairing_optimized(all_feature_data_lists: List[List[Dict]], best_mat
             match_group['files'] = [feature['filename']]
             match_group['match_score'] = 1.0
             matches.append(match_group)
-        return matches, edges, file_index_map
+        return matches, edges
     
     print("\n[PROGRESS] Starting feature pairing (optimized)")
     print("  Pairing features (OPTIMIZED) using KD-tree nearest-neighbor...")
@@ -1291,14 +1231,15 @@ def feature_pairing_optimized(all_feature_data_lists: List[List[Dict]], best_mat
         for charge, charge_features in charge_dict.items():
             for feature_idx, ref_feature in enumerate(charge_features):
                 if feature_idx % 100 == 0:
-                    print(f"    Processing file {file_file_idx}, charge {charge}: feature {feature_idx}/{len(charge_features)}", end='\r', flush=True)
+                    print(f"    Processing file {file_file_idx}, charge {charge}: feature {feature_idx}/{len(charge_features)}", end='\r')
                 
                 # Use scaled coordinates for KD-tree query
                 ref_coords_scaled = scale_coords(np.array([[ref_feature['x_center'], ref_feature['y_center']]]))
                 
-                # [MEMORY OPTIMIZATION] Store file/feature indices instead of filename strings
-                current_file_idx = ref_feature['_file_idx']
-                current_feature_idx = ref_feature['_feat_idx']
+                current_file_info = {
+                    'filename': ref_feature['filename'],
+                    'feature_idx': ref_feature['_feat_idx']
+                }
                 
                 # Query each other file's KD-tree for matches within distance cutoff
                 # ONLY match with features of the SAME charge
@@ -1306,7 +1247,7 @@ def feature_pairing_optimized(all_feature_data_lists: List[List[Dict]], best_mat
                     processed_pairwise_comparisons += 1
                     if processed_pairwise_comparisons % max(1, total_pairwise_comparisons // 20) == 0:
                         pct = int(100 * processed_pairwise_comparisons / total_pairwise_comparisons) if total_pairwise_comparisons > 0 else 0
-                        print(f"    [Pairwise comparisons: {processed_pairwise_comparisons}/{total_pairwise_comparisons} ({pct}%)]", end='\r', flush=True)
+                        print(f"    [Pairwise comparisons: {processed_pairwise_comparisons}/{total_pairwise_comparisons} ({pct}%)]", end='\r')
                     
                     if query_file_idx == file_file_idx:
                         continue
@@ -1360,51 +1301,28 @@ def feature_pairing_optimized(all_feature_data_lists: List[List[Dict]], best_mat
                                 mz_dist = (ref_scaled_coords[0] - matched_scaled_coords[0]) ** 2
                                 rt_dist = (ref_scaled_coords[1] - matched_scaled_coords[1]) ** 2
                             
-                            # Calculate distances in SCALED space (for KD-tree efficiency/visualization)
                             exact_distance = float(np.sqrt(mz_dist + rt_dist))
-                            mz_distance = float(np.sqrt(mz_dist))  # Separate m/z distance in scaled space
-                            rt_distance = float(np.sqrt(rt_dist))  # Separate RT distance in scaled space
+                            mz_distance = float(np.sqrt(mz_dist))  # Separate m/z distance
+                            rt_distance = float(np.sqrt(rt_dist))  # Separate RT distance
                             
-                            # [CRITICAL FIX] Calculate distances in ORIGINAL coordinate space for cutoff comparison
-                            # This ensures cutoff parameters (which are in original space) are compared fairly
-                            original_mz_dist = (ref_feature['x_center'] - matched_feature['x_center']) ** 2
-                            original_rt_dist = (ref_feature['y_center'] - matched_feature['y_center']) ** 2
-                            original_mz_distance = float(np.sqrt(original_mz_dist))
-                            original_rt_distance = float(np.sqrt(original_rt_dist))
-                            original_exact_distance = float(np.sqrt(original_mz_dist + original_rt_dist))
+                            # Create matched feature info
+                            matched_file_info = {
+                                'filename': matched_feature['filename'],
+                                'feature_idx': matched_feature['_feat_idx']
+                            }
                             
-                            # [MEMORY OPTIMIZATION] Filter edges at creation time to avoid storing rejected edges
-                            # Apply cutoff filters DURING loop instead of post-processing
-                            # ALL COMPARISONS USE ORIGINAL-SPACE DISTANCES FOR CONSISTENCY
-                            if mz_cutoff is not None and rt_cutoff is not None:
-                                # Coordinate-based filtering: check both m/z and RT cutoffs (in original space)
-                                if original_mz_distance > mz_cutoff or original_rt_distance > rt_cutoff:
-                                    continue  # Skip this edge, don't add to dict
-                            elif edges_cutoff is not None:
-                                # Distance-based filtering: check euclidean distance cutoff (in original space)
-                                if original_exact_distance > edges_cutoff:
-                                    continue  # Skip this edge, don't add to dict
-                            
-                            # [MEMORY OPTIMIZATION] Store indices instead of filename dicts
-                            matched_feature_idx = matched_feature['_feat_idx']
-                            
-                            # Add edge connecting the two features (indices only, no filenames)
+                            # Add edge connecting the two features
                             edge = {
-                                'current_feature_idx': current_feature_idx,
-                                'matched_feature_idx': matched_feature_idx,
+                                'current_file': current_file_info,
+                                'matched_file': matched_file_info,
                                 'distance': exact_distance,
-                                'ref_file_idx': file_file_idx,      # Reference file being looped over
-                                'match_file_idx': query_file_idx,   # Query file for matching
+                                'mz_distance': mz_distance,  # Separate m/z distance
+                                'rt_distance': rt_distance,  # Separate RT distance
+                                'ref_file_idx': file_file_idx,
+                                'match_file_idx': query_file_idx,
                                 'charge': charge  # Include charge validation in edge
                             }
                             edges[file_file_idx].append(edge)
-        
-        # [MEMORY OPTIMIZATION] After completing all charges/features for this file, force garbage collection
-        # This prevents edges[0], edges[1], ... edges[N] from all accumulating simultaneously
-        # Reduces memory bloat as the loop processes multiple files sequentially
-        print(f"    File {file_file_idx} complete: {len(edges[file_file_idx])} edges. Collecting garbage...")
-        gc.collect()
-                            
     
     # Diagnostic output: verify all edges have matching charges
     print("\n  Verifying charge consistency in edges:")
@@ -1425,7 +1343,7 @@ def feature_pairing_optimized(all_feature_data_lists: List[List[Dict]], best_mat
     # Skip match building if explicitly requested (for edge-only output)
     if skip_match_building:
         print("  Skipping match consolidation (flagged for edge-only output)")
-        return matches, edges, file_index_map
+        return matches, edges
     
     # Flatten file_features_by_charge for match consolidation
     file_features_list = []
@@ -1441,91 +1359,7 @@ def feature_pairing_optimized(all_feature_data_lists: List[List[Dict]], best_mat
     
     print(f"\n[PROGRESS] Step 4 complete: Pairwise matching done ({processed_pairwise_comparisons} comparisons)")
     print(f"[PROGRESS] Feature pairing completed successfully")
-    
-    # [DELETION POINT #3] rt_corrections loaded from JSON is no longer used after pairing
-    if 'rt_corrections' in locals():
-        del rt_corrections
-    
-    return matches, edges, file_index_map
-
-
-def restore_filenames_in_edges_json(json_path: str, file_index_map: Dict[int, str]) -> None:
-    """
-    Post-process edges JSON to restore filenames from indices and clean up edge structure.
-    During pairing, filenames are replaced with indices to save memory (~1.26GB).
-    This function restores filenames and removes index fields, creating clean nested structures.
-    
-    Converts from:
-    - ref_file_idx, match_file_idx, current_feature_idx, matched_feature_idx
-    
-    To clean nested structure for build_network_graph.py:
-    - current_file: {filename, feature_idx}
-    - matched_file: {filename, feature_idx}
-    
-    Args:
-        json_path: Path to JSON file with edges using indices
-        file_index_map: Mapping {file_idx: filename}
-    """
-    if not os.path.exists(json_path):
-        print(f"⊘ Edges JSON not found: {json_path}")
-        return
-    
-    try:
-        with open(json_path, 'r') as f:
-            data = json.load(f)
-        
-        print(f"Restoring filenames in edges JSON and cleaning structure...")
-        edges_updated = 0
-        edges_missing_filenames = 0
-        
-        # Handle both direct edges dict and wrapped format
-        if isinstance(data, dict) and 'network_edges' in data:
-            # Wrapped format from edges save
-            edges_dict = data['network_edges']
-        else:
-            # Direct edges dict
-            edges_dict = data
-        
-        # Restore filenames in edges and remove index fields
-        for file_idx_str, edge_list in edges_dict.items():
-            for edge in edge_list:
-                # Build current_file nested structure
-                ref_file_idx = edge.get('ref_file_idx')
-                if ref_file_idx is not None and ref_file_idx in file_index_map:
-                    edge['current_file'] = {
-                        'filename': file_index_map[ref_file_idx],
-                        'feature_idx': edge.get('current_feature_idx', -1)
-                    }
-                else:
-                    edges_missing_filenames += 1
-                
-                # Build matched_file nested structure
-                match_file_idx = edge.get('match_file_idx')
-                if match_file_idx is not None and match_file_idx in file_index_map:
-                    edge['matched_file'] = {
-                        'filename': file_index_map[match_file_idx],
-                        'feature_idx': edge.get('matched_feature_idx', -1)
-                    }
-                else:
-                    edges_missing_filenames += 1
-                
-                # Remove index fields (keep only nested structures)
-                for key in ['ref_file_idx', 'match_file_idx', 'current_feature_idx', 'matched_feature_idx']:
-                    if key in edge:
-                        del edge[key]
-                
-                edges_updated += 1
-        
-        # Save cleaned JSON
-        with open(json_path, 'w') as f:
-            json.dump(data, f, indent=2)
-        
-        print(f"  ✓ Restored and cleaned {edges_updated} edges in {os.path.basename(json_path)}")
-        if edges_missing_filenames > 0:
-            print(f"  ⚠ {edges_missing_filenames} edge endpoints missing from file_index_map (may cause issues downstream)")
-    
-    except Exception as e:
-        print(f"✗ Warning: Failed to restore filenames in JSON: {e}")
+    return matches, edges
 
 
 def main():
@@ -1539,7 +1373,7 @@ def main():
     parser.add_argument("--output_edges_pkl", help="Output edges dictionary pickle file (default: inferred from output_pkl)")
     parser.add_argument("--output_unpaired_json", help="Output JSON file for unpaired vertices (features with no edges)")
 
-    parser.add_argument("--skip-matchfinder", action='store_true', help="Skip matchfinder processing (match consolidation). Only export edges dictionary. Useful for network graph analysis.")
+    parser.add_argument("--skip-matchfinder", default=False, help="Skip matchfinder processing (match consolidation). Only export edges dictionary. Useful for network graph analysis.")
     parser.add_argument("--match_cutoff", type=float, default=None, help="Minimum match score cutoff (0.0-1.0)")
     # Note: best_match_only is now hardcoded to True
     parser.add_argument("--edges_cutoff", type=float, default=None, help="Maximum distance cutoff for edges (filters edges based on euclidean distance)")
@@ -1560,12 +1394,6 @@ def main():
     parser.add_argument("--disable_multiprocessing", action='store_true', help="Disable multiprocessing (default: enabled)")
     
     args = parser.parse_args()
-    
-    # Start tracemalloc for memory profiling
-    try:
-        tracemalloc.start()
-    except RuntimeError:
-        pass  # Already started
     
     print(f"\n{'='*70}")
     print(f"Feature Pairing")
@@ -1618,12 +1446,6 @@ def main():
     # Capture the TRUE "before filtering" count - total features from TSV files BEFORE any cutoffs
     total_features_before_filtering = sum(len(feature_list) for feature_list in all_feature_data_lists)
     print(f"Total features loaded from TSV files: {total_features_before_filtering}")
-    
-    # [DELETION POINT #1] feature_files no longer used after this point
-    # Save the count before deleting since it's needed in output_data
-    num_input_files = len(feature_files)
-    del feature_files
-    gc.collect()
     
     # DEBUG: Print command-line arguments related to trafoXML and RT correction
     print(f"\n[DEBUG] Command-line argument values:")
@@ -1699,10 +1521,6 @@ def main():
             all_feature_data_lists = apply_aligntree_rt_transformations(all_feature_data_lists, fid_to_rt_dict)
             print(f"  ✓ AlignTree transformations applied successfully")
             
-            # [DELETION POINT #2] fid_to_rt_dict no longer used after this point
-            del fid_to_rt_dict
-            gc.collect()
-            
             # Set rt_correction_mode to 'none' since corrections already applied via transformations
             args.rt_correction_mode = 'none'
         except Exception as e:
@@ -1719,20 +1537,25 @@ def main():
         pass
     
     # Pair features using KD-tree based optimized method (hardcoded)
-    paired_features, network_edges, file_index_map = feature_pairing_optimized(all_feature_data_lists, best_match_only=True, skip_match_building=args.skip_matchfinder, normalize_coordinates=normalize_coordinates, distance_calc_before_scaling=args.distance_calc_before_scaling, rt_correction_json=args.rt_correction_json, rt_correction_mode=args.rt_correction_mode, rt_source=args.rt_source, mz_rt_weight_ratio=args.mz_rt_weight_ratio, mz_cutoff=args.mz_cutoff, rt_cutoff=args.rt_cutoff, edges_cutoff=args.edges_cutoff)
+    paired_features, network_edges = feature_pairing_optimized(all_feature_data_lists, best_match_only=True, skip_match_building=args.skip_matchfinder, normalize_coordinates=normalize_coordinates, distance_calc_before_scaling=args.distance_calc_before_scaling, rt_correction_json=args.rt_correction_json, rt_correction_mode=args.rt_correction_mode, rt_source=args.rt_source, mz_rt_weight_ratio=args.mz_rt_weight_ratio)
     
     print(f"Built network graph with {sum(len(e) for e in network_edges.values())} edges")
-    print(f"  File index mapping: {file_index_map}")
-    print(f"  [Note: Edges were filtered during pairing based on cutoff parameters]")
     
     # Filter edges by cutoff if specified
-    # [OPTIMIZATION] Filtering now happens during Step 4 pairing, not as post-processing
     if args.mz_cutoff is not None and args.rt_cutoff is not None:
-        print(f"✓ Edges were filtered during pairing with coordinate cutoffs: mz={args.mz_cutoff}, rt={args.rt_cutoff}")
+        # Coordinate-based filtering (mz and rt)
+        print(f"Filtering edges with coordinate cutoffs: mz={args.mz_cutoff}, rt={args.rt_cutoff}")
+        edges_before_filter = sum(len(e) for e in network_edges.values())
+        network_edges = filter_edges_by_coordinate_cutoffs(network_edges, args.mz_cutoff, args.rt_cutoff, all_feature_data_lists)
+        edges_after_filter = sum(len(e) for e in network_edges.values())
+        print(f"Filtered edges: {edges_before_filter} -> {edges_after_filter}")
     elif args.edges_cutoff is not None:
-        print(f"✓ Edges were filtered during pairing with distance cutoff: {args.edges_cutoff}")
-    else:
-        print(f"ℹ No edge filtering (no cutoff parameters specified)")
+        # Distance-based filtering (euclidean distance)
+        print(f"Filtering edges with distance cutoff: {args.edges_cutoff}")
+        edges_before_filter = sum(len(e) for e in network_edges.values())
+        network_edges = filter_edges_by_distance_cutoff(network_edges, args.edges_cutoff)
+        edges_after_filter = sum(len(e) for e in network_edges.values())
+        print(f"Filtered edges: {edges_before_filter} -> {edges_after_filter}")
 
     # Optional post-pair coordinate normalization for edge distances
     if args.postpair_normalize_coordinates:
@@ -1747,7 +1570,7 @@ def main():
     else:
         print("Skipping edge distance normalization (--normalize_edge_distances disabled)")
     
-    # Extract and save unpaired vertices (features with no edges in network_edges)
+    # Extract and save unpaired vertices (features with no edges after filtering)
     unpaired_vertices = extract_and_save_unpaired_vertices(network_edges, all_feature_data_lists, args.output_unpaired_json)
     
     # If skip-matchfinder is enabled, save edges only and exit
@@ -1776,7 +1599,7 @@ def main():
         
         with open(edges_output_path, 'wb') as f:
             pickle.dump(edges_with_params, f)
-        print(f"✓ Saved edges dictionary (pickle): {os.path.basename(edges_output_path)}(under skip-matchfinder mode)")
+        print(f"✓ Saved edges dictionary (pickle): {os.path.basename(edges_output_path)}")
         
         # Also save edges dictionary as JSON
         edges_json_path = args.output_json.replace('paired_features', 'edges')
@@ -1784,52 +1607,19 @@ def main():
             # If replacement didn't work, modify the filename
             edges_json_path = args.output_json.replace('.json', '_edges.json')
         
-        # DIAGNOSTIC: Add marker to first edge
-        if network_edges:
-            first_file_idx = list(network_edges.keys())[0]
-            if network_edges[first_file_idx]:
-                network_edges[first_file_idx][0]['__DIAGNOSTIC_CODE_EXECUTED__'] = True
-        
         with open(edges_json_path, 'w') as f:
             json.dump(network_edges, f, indent=2)
         print(f"✓ Saved edges dictionary (JSON): {os.path.basename(edges_json_path)}")
         
         print(f"\n  Next step: Build network graph with:")
         print(f"    python build_network_graph.py --input_pkl {os.path.basename(edges_output_path)} --edge_cutoff <DISTANCE>\n")
-        
-        # Restore filenames in JSON before exiting
-        restore_filenames_in_edges_json(edges_json_path, file_index_map)
-        
-        # [DELETION POINT #5] Early exit path: clean up before returning
-        del network_edges
-        del unpaired_vertices
-        gc.collect()
         return
     
     # BUILD CONNECTED COMPONENTS FROM FILTERED EDGES
     # This is crucial: components are built AFTER edge filtering to ensure
     # that only features connected by edges passing the cutoff are grouped together
     print("\n  Building connected components from filtered edges...")
-    mem_before_cc = get_memory_info("Before building connected components", print_details=True)
-    print(f"[DEBUG] network_edges keys: {list(network_edges.keys())}")
-    print(f"[DEBUG] network_edges total edges: {sum(len(edges) for edges in network_edges.values())}")
-    print(f"[DEBUG] all_feature_data_lists length: {len(all_feature_data_lists)}")
-    print(f"[DEBUG] Starting _build_connected_components_from_edges call...")
-    
     paired_features = _build_connected_components_from_edges(network_edges, all_feature_data_lists)
-    
-    mem_after_cc = get_memory_info("After building connected components", print_details=True)
-    mem_delta = mem_after_cc - mem_before_cc
-    print(f"[DEBUG] Memory delta from connected components: {mem_delta:.1f} MB")
-    print(f"[DEBUG] paired_features length: {len(paired_features)}")
-    print(f"[DEBUG] paired_features first item keys: {paired_features[0].keys() if paired_features else 'EMPTY'}")
-    
-    # [DELETION POINT #4] CRITICAL: all_feature_data_lists no longer used after component building
-    print("[DEBUG] About to delete all_feature_data_lists...")
-    print("Clearing feature data from memory to prevent OOM during output generation...")
-    del all_feature_data_lists
-    gc.collect()
-    print("  ✓ Feature data freed (~500MB)")
     
     # Filter features within groups by best inter-feature match score cutoff
     def filter_features_in_group(match_group):
@@ -1900,11 +1690,6 @@ def main():
     
     print(f"Total features before filtering: {total_features_before_filter}")
     print(f"Total features after filtering: {total_features_after_filter}")
-    
-    # [DEBUG] Track memory around filtering
-    mem_after_filter = get_memory_info("AFTER FILTERING", print_details=True)
-    print(f"[DEBUG] paired_features size estimate: {len(str(paired_features))/1024/1024:.1f} MB")
-    print(f"[DEBUG] filtered_features size estimate: {len(str(filtered_features))/1024/1024:.1f} MB")
     
     # Build combined pep_ident and prot_ident lookup from filtered features for export to build_network_graph.py
     print("\nBuilding combined pep_ident and prot_ident lookup from filtered features...")
@@ -2047,14 +1832,7 @@ def main():
         # Skip analysis by default (much faster)
         pep_ident_stats = {'total_groups': len(filtered_features), 'skipped': True}
     
-    # [DELETION POINT #6] unpaired_vertices no longer used after this point
-    del unpaired_vertices
-    gc.collect()
-    
     # Save results with statistics
-    print("[DEBUG] Creating output_data dictionary...")
-    mem_before_output_create = get_memory_info("BEFORE OUTPUT CREATION", print_details=True)
-    
     output_data = {
         'paired_features': filtered_features,
         'network_edges': network_edges,  # Include network graph structure
@@ -2074,58 +1852,35 @@ def main():
             'distance_calc_before_scaling': args.distance_calc_before_scaling,
             'normalize_coordinates': normalize_coordinates,
             'postpair_normalize_coordinates': args.postpair_normalize_coordinates,
-            'postpair_note': 'If postpair_normalize_coordinates=true: distance is original euclidean distance; distance_rescaled is from rescaled coordinate space',
+            'postpair_note': 'If postpair_normalize_coordinates=true: distance/mz_distance/rt_distance are original values; rescaled versions in *_rescaled fields',
             'match_cutoff': args.match_cutoff,
-            'input_files': num_input_files,
+            'input_files': len(feature_files),
             'skip_matchfinder': args.skip_matchfinder
         }
     }
     
-    mem_after_output_create = get_memory_info("AFTER OUTPUT CREATION", print_details=True)
-    print(f"[DEBUG] Memory delta for output_data creation: {mem_after_output_create - mem_before_output_create:.1f} MB")
-    
     # OPTIMIZED: Save pickle (fast binary format)
-    print("[DEBUG] Starting pickle save...")
-    mem_before_pickle = get_memory_info("BEFORE PICKLE SAVE", print_details=True)
     print("Saving output (pickle)...")
     with open(args.output_pkl, 'wb') as f:
         pickle.dump(output_data, f)
-    mem_after_pickle = get_memory_info("AFTER PICKLE SAVE", print_details=True)
-    print(f"[DEBUG] Memory delta for pickle save: {mem_after_pickle - mem_before_pickle:.1f} MB")
     print(f"✓ Saved paired features (pickle): {os.path.basename(args.output_pkl)}")
-    
-    # [DELETION POINT #7] If skipping JSON output, can free output_data earlier
-    if args.skip_json_output:
-        print("Skipping JSON output - freeing output data...")
-        del output_data
-        gc.collect()
     
     # OPTIMIZED: Skip JSON by default (optional) - JSON serialization of 45K+ features is slow
     if not args.skip_json_output:
-        print("[DEBUG] Starting JSON save...")
-        mem_before_json = get_memory_info("BEFORE JSON SAVE", print_details=True)
         print("Saving output (JSON)...  (this may take a while, use --skip_json_output to skip)")
         with open(args.output_json, 'w') as f:
             json.dump(output_data, f, indent=2)
-        mem_after_json = get_memory_info("AFTER JSON SAVE", print_details=True)
-        print(f"[DEBUG] Memory delta for JSON save: {mem_after_json - mem_before_json:.1f} MB")
         print(f"✓ Saved paired features (JSON): {os.path.basename(args.output_json)}")
     else:
         print(f"⊘ Skipped JSON output (--skip_json_output enabled)")
     
     # Save combined ident lookup (pep_ident + prot_ident) separately for fast loading in build_network_graph.py
-    print("[DEBUG] Starting ident_lookup save...")
-    mem_before_ident = get_memory_info("BEFORE IDENT_LOOKUP SAVE", print_details=True)
     ident_lookup_path = args.output_json.replace('.json', '_ident_lookup.json')
     with open(ident_lookup_path, 'w') as f:
         json.dump(ident_lookup, f, indent=2)
-    mem_after_ident = get_memory_info("AFTER IDENT_LOOKUP SAVE", print_details=True)
-    print(f"[DEBUG] Memory delta for ident_lookup save: {mem_after_ident - mem_before_ident:.1f} MB")
     print(f"✓ Saved combined ident lookup: {os.path.basename(ident_lookup_path)}")
     
     # Save edges dictionary separately for direct use with build_network_graph.py
-    print("[DEBUG] Starting edges save...")
-    mem_before_edges = get_memory_info("BEFORE EDGES SAVE", print_details=True)
     edges_output_path = args.output_edges_pkl
     if not edges_output_path:
         # Infer from output_pkl: replace 'paired_features' with 'edges' or add '_edges' suffix
@@ -2136,23 +1891,13 @@ def main():
     
     with open(edges_output_path, 'wb') as f:
         pickle.dump(network_edges, f)
-    mem_after_edges_pkl = get_memory_info("AFTER EDGES PKL SAVE", print_details=True)
-    print(f"[DEBUG] Memory delta for edges pkl save: {mem_after_edges_pkl - mem_before_edges:.1f} MB")
     print(f"✓ Saved edges dictionary (pickle): {os.path.basename(edges_output_path)}")
     print(f"  Optionally use with: python build_network_graph.py --input_pkl {os.path.basename(edges_output_path)}")
     
     # Also save edges JSON for reporting and visualization pipelines
-    print("[DEBUG] Starting edges JSON save...")
     edges_json_path = edges_output_path.replace('.pkl', '.json')
     if not args.skip_json_output:
         try:
-            # DIAGNOSTIC: Add a marker to the first edge so we know this code is running
-            if network_edges:
-                first_file_idx = list(network_edges.keys())[0]
-                if network_edges[first_file_idx]:
-                    # Add diagnostic field to FIRST EDGE ONLY
-                    network_edges[first_file_idx][0]['__DIAGNOSTIC_CODE_EXECUTED__'] = True
-            
             # Convert network_edges dict to JSON-serializable format
             edges_for_json = {}
             for edge_key, edge_data in network_edges.items():
@@ -2160,60 +1905,13 @@ def main():
                 str_key = str(edge_key)
                 edges_for_json[str_key] = edge_data
             
-            # Replace file indices with filenames FOR JSON OUTPUT ONLY
-            # (keeping in-memory dict small with indices)
-            print("[DEBUG] Converting file indices to filenames during JSON write...")
-            edges_converted = 0
-            for file_idx_str, edge_list in edges_for_json.items():
-                for edge in edge_list:
-                    # Build current_file nested structure from index
-                    ref_file_idx = edge.get('ref_file_idx')
-                    if ref_file_idx is not None and ref_file_idx in file_index_map:
-                        edge['current_file'] = {
-                            'filename': file_index_map[ref_file_idx],
-                            'feature_idx': edge.get('current_feature_idx', -1)
-                        }
-                    
-                    # Build matched_file nested structure from index
-                    match_file_idx = edge.get('match_file_idx')
-                    if match_file_idx is not None and match_file_idx in file_index_map:
-                        edge['matched_file'] = {
-                            'filename': file_index_map[match_file_idx],
-                            'feature_idx': edge.get('matched_feature_idx', -1)
-                        }
-                    
-                    # Remove index fields to clean up JSON output
-                    for key in ['ref_file_idx', 'match_file_idx', 'current_feature_idx', 'matched_feature_idx']:
-                        edge.pop(key, None)
-                    
-                    edges_converted += 1
-            
-            print(f"[DEBUG] Converted {edges_converted} edge records with filenames")
-            
-            mem_before_edges_json = get_memory_info("BEFORE EDGES JSON SAVE", print_details=True)
             with open(edges_json_path, 'w') as f:
                 json.dump(edges_for_json, f, indent=2)
-            mem_after_edges_json = get_memory_info("AFTER EDGES JSON SAVE", print_details=True)
-            print(f"[DEBUG] Memory delta for edges JSON save: {mem_after_edges_json - mem_before_edges_json:.1f} MB")
             print(f"✓ Saved edges dictionary (JSON): {os.path.basename(edges_json_path)}")
         except Exception as e:
             print(f"⊘ Failed to save edges JSON: {e}")
     else:
         print(f"⊘ Skipped edges JSON output (--skip_json_output enabled)")
-    
-    # [DELETION POINT #8] Final cleanup after all output operations complete
-    print("Final memory cleanup...")
-    del output_data
-    del filtered_features
-    del network_edges
-    del ident_lookup
-    del pep_ident_stats
-    gc.collect()
-    print("  ✓ Output data structures freed")
-    
-    # NOTE: Filename restoration is now done DURING JSON save (see edges JSON write section above)
-    # This eliminates the memory spike from re-reading the entire JSON file
-    print("[DEBUG] Skipping post-process filename restoration (already done during JSON write)")
 
 
 if __name__ == "__main__":

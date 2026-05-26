@@ -52,27 +52,108 @@ except ImportError:
 
 
 def get_memory_info(label="", print_details=False):
-    """Get current memory usage and return human-readable info."""
+    """
+    Get comprehensive memory usage info using multiple methods.
+    Returns RSS in MB, but prints all available metrics.
+    """
+    # Start tracemalloc if not already started
+    if not tracemalloc.is_tracing():
+        tracemalloc.start()
+    
     process = psutil.Process(os.getpid())
     mem_info = process.memory_info()
-    mem_mb = mem_info.rss / (1024 * 1024)
+    
+    # Get all memory metrics
+    rss_mb = mem_info.rss / (1024 * 1024)  # Resident Set Size - actual physical memory
+    vms_mb = mem_info.vms / (1024 * 1024)  # Virtual Memory Size - all mapped memory
+    
+    # Get tracemalloc peak (Python object allocations only)
+    current, peak = tracemalloc.get_traced_memory()
+    current_mb = current / (1024 * 1024)
+    peak_mb = peak / (1024 * 1024)
     
     if print_details:
-        try:
-            if not tracemalloc.is_tracing():
-                tracemalloc.start()
-            tracemalloc.take_snapshot()
-        except:
-            pass
-        print(f"[DEBUG MEMORY] {label}")
-        print(f"  RSS (total physical): {mem_mb:.1f} MB")
+        print(f"[COMPREHENSIVE MEMORY TRACKING] {label}")
+        print(f"  RSS (physical memory in use):       {rss_mb:8.1f} MB")
+        print(f"  VSZ (virtual memory mapped):        {vms_mb:8.1f} MB")
+        print(f"  Tracemalloc current (Python objs):  {current_mb:8.1f} MB")
+        print(f"  Tracemalloc peak (Python objs):     {peak_mb:8.1f} MB")
         try:
             percent = process.memory_percent()
-            print(f"  Memory percent: {percent:.1f}%")
+            print(f"  System memory percent:              {percent:8.1f} %")
         except:
             pass
+        # Show difference from baseline
+        print()
     
-    return mem_mb
+    return rss_mb
+
+
+def get_object_size_recursive(obj, seen=None, depth=0, max_depth=3):
+    """
+    Recursively estimate size of a Python object including nested structures.
+    Useful for estimating dictionary/list memory usage.
+    """
+    if seen is None:
+        seen = set()
+    
+    obj_id = id(obj)
+    if obj_id in seen or depth > max_depth:
+        return 0
+    
+    seen.add(obj_id)
+    size = sys.getsizeof(obj)
+    
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            size += get_object_size_recursive(k, seen, depth + 1, max_depth)
+            size += get_object_size_recursive(v, seen, depth + 1, max_depth)
+    elif isinstance(obj, (list, tuple)):
+        for item in obj:
+            size += get_object_size_recursive(item, seen, depth + 1, max_depth)
+    elif isinstance(obj, np.ndarray):
+        size += obj.nbytes  # Direct array data
+    
+    return size
+
+
+def print_structure_sizes(label, structures_dict):
+    """Print estimated memory sizes of key data structures."""
+    print(f"\n[STRUCTURE SIZES] {label}")
+    total_size = 0
+    for name, obj in structures_dict.items():
+        if obj is None:
+            print(f"  {name:30s}: Not allocated")
+            continue
+        try:
+            if isinstance(obj, dict):
+                # For dictionaries, estimate based on size of content
+                if isinstance(obj, dict) and len(obj) > 0:
+                    size = get_object_size_recursive(obj)
+                    size_mb = size / (1024 * 1024)
+                    print(f"  {name:30s}: {size_mb:8.1f} MB ({len(obj)} entries)")
+                    total_size += size
+                else:
+                    print(f"  {name:30s}: <1 MB (empty)")
+            elif isinstance(obj, list):
+                size = get_object_size_recursive(obj)
+                size_mb = size / (1024 * 1024)
+                print(f"  {name:30s}: {size_mb:8.1f} MB ({len(obj)} entries)")
+                total_size += size
+            elif isinstance(obj, np.ndarray):
+                size_mb = obj.nbytes / (1024 * 1024)
+                print(f"  {name:30s}: {size_mb:8.1f} MB (shape {obj.shape})")
+                total_size += obj.nbytes
+            else:
+                size = sys.getsizeof(obj)
+                size_mb = size / (1024 * 1024)
+                print(f"  {name:30s}: {size_mb:8.1f} MB")
+                total_size += size
+        except Exception as e:
+            print(f"  {name:30s}: Error measuring - {e}")
+    
+    print(f"  {'TOTAL ESTIMATED':30s}: {total_size / (1024 * 1024):8.1f} MB")
+    print()
 
 
 def build_trafoxmls_fid_dict(trafoxmls_dir: str) -> Dict[str, float]:
@@ -1217,6 +1298,8 @@ def feature_pairing_optimized(all_feature_data_lists: List[List[Dict]], best_mat
     # Build KD-trees for each charge group in each file
     # Structure: {file_idx: {charge: {'kdtree': cKDTree, 'features': [features], 'coords': np.array}}}
     print("\n[PROGRESS] Step 3: Building KD-trees for each file/charge combination...")
+    get_memory_info("BEFORE KD-TREE BUILDING", print_details=True)
+    
     kdtrees_by_charge = []
     
     for file_idx, charge_dict in enumerate(file_features_by_charge):
@@ -1236,7 +1319,9 @@ def feature_pairing_optimized(all_feature_data_lists: List[List[Dict]], best_mat
                 'coords': scaled_coords
             }
         kdtrees_by_charge.append(file_kdtrees)
+    
     print(f"  ✓ KD-trees built successfully")
+    get_memory_info("AFTER KD-TREE BUILDING", print_details=True)
     
     # Pre-compute corrected KD-trees for all file pairs (if RT corrections enabled)
     # Note: Pre-kdtree computation is skipped for JSON-based corrections
@@ -1272,6 +1357,7 @@ def feature_pairing_optimized(all_feature_data_lists: List[List[Dict]], best_mat
     edges = {}
     
     print("\n[PROGRESS] Step 4: Performing pairwise feature matching...")
+    get_memory_info("BEFORE PAIRWISE MATCHING", print_details=True)
     num_files = len(all_feature_data_lists)
     total_pairwise_comparisons = 0
     processed_pairwise_comparisons = 0
@@ -1309,6 +1395,11 @@ def feature_pairing_optimized(all_feature_data_lists: List[List[Dict]], best_mat
                         print(f"    [Pairwise comparisons: {processed_pairwise_comparisons}/{total_pairwise_comparisons} ({pct}%)]", end='\r', flush=True)
                     
                     if query_file_idx == file_file_idx:
+                        continue
+                    
+                    # [CRITICAL CHECK] Skip if KD-trees for this file have been freed (set to None)
+                    # This can happen if we're comparing against a file that was already processed
+                    if kdtrees_by_charge[query_file_idx] is None:
                         continue
                     
                     # Get the KD-tree for this charge in the query file
@@ -1408,6 +1499,15 @@ def feature_pairing_optimized(all_feature_data_lists: List[List[Dict]], best_mat
     
     # Diagnostic output: verify all edges have matching charges
     print("\n  Verifying charge consistency in edges:")
+    get_memory_info("AFTER PAIRWISE MATCHING (before consolidation)", print_details=True)
+    
+    # Print structure sizes before consolidation
+    print_structure_sizes("STRUCTURE SIZES AFTER MATCHING", {
+        'edges (total)': edges,
+        'file_features_by_charge': file_features_by_charge,
+        'all_feature_data_lists': all_feature_data_lists
+    })
+    
     edges_by_charge = {}
     total_edges_verified = 0
     for file_idx, edge_list in edges.items():
@@ -1425,6 +1525,20 @@ def feature_pairing_optimized(all_feature_data_lists: List[List[Dict]], best_mat
     # Skip match building if explicitly requested (for edge-only output)
     if skip_match_building:
         print("  Skipping match consolidation (flagged for edge-only output)")
+        
+        # [AGGRESSIVE CLEANUP] Free large intermediate data structures before returning
+        print("  ✓ Performing aggressive memory cleanup...")
+        mem_before_cleanup = get_memory_info("BEFORE CLEANUP", print_details=True)
+        
+        # Delete large data structures that are no longer needed
+        del file_features_by_charge
+        del kdtrees_by_charge
+        del scale_coords
+        gc.collect()
+        
+        mem_after_cleanup = get_memory_info("AFTER CLEANUP", print_details=True)
+        print(f"    Memory freed: {mem_before_cleanup - mem_after_cleanup:.1f} MB")
+        
         return matches, edges, file_index_map
     
     # Flatten file_features_by_charge for match consolidation
@@ -1561,12 +1675,6 @@ def main():
     
     args = parser.parse_args()
     
-    # Start tracemalloc for memory profiling
-    try:
-        tracemalloc.start()
-    except RuntimeError:
-        pass  # Already started
-    
     print(f"\n{'='*70}")
     print(f"Feature Pairing")
     print(f"{'='*70}")
@@ -1618,6 +1726,13 @@ def main():
     # Capture the TRUE "before filtering" count - total features from TSV files BEFORE any cutoffs
     total_features_before_filtering = sum(len(feature_list) for feature_list in all_feature_data_lists)
     print(f"Total features loaded from TSV files: {total_features_before_filtering}")
+    
+    
+    # [DIAGNOSTIC] Print memory state after loading all features
+    get_memory_info("AFTER LOADING ALL FEATURES", print_details=True)
+    print_structure_sizes("INITIAL STRUCTURE SIZES", {
+        'all_feature_data_lists': all_feature_data_lists
+    })
     
     # [DELETION POINT #1] feature_files no longer used after this point
     # Save the count before deleting since it's needed in output_data
@@ -1718,13 +1833,34 @@ def main():
         # JSON-based corrections will be applied by feature_pairing_optimized
         pass
     
-    # Pair features using KD-tree based optimized method (hardcoded)
-    paired_features, network_edges, file_index_map = feature_pairing_optimized(all_feature_data_lists, best_match_only=True, skip_match_building=args.skip_matchfinder, normalize_coordinates=normalize_coordinates, distance_calc_before_scaling=args.distance_calc_before_scaling, rt_correction_json=args.rt_correction_json, rt_correction_mode=args.rt_correction_mode, rt_source=args.rt_source, mz_rt_weight_ratio=args.mz_rt_weight_ratio, mz_cutoff=args.mz_cutoff, rt_cutoff=args.rt_cutoff, edges_cutoff=args.edges_cutoff)
+    # Pair features using KD-tree based optimized method (always skip component building)
+    paired_features, network_edges, file_index_map = feature_pairing_optimized(all_feature_data_lists, best_match_only=True, skip_match_building=True, normalize_coordinates=normalize_coordinates, distance_calc_before_scaling=args.distance_calc_before_scaling, rt_correction_json=args.rt_correction_json, rt_correction_mode=args.rt_correction_mode, rt_source=args.rt_source, mz_rt_weight_ratio=args.mz_rt_weight_ratio, mz_cutoff=args.mz_cutoff, rt_cutoff=args.rt_cutoff, edges_cutoff=args.edges_cutoff)
+    
+    # [DIAGNOSTIC] Print memory state after pairing completes
+    get_memory_info("AFTER FEATURE PAIRING", print_details=True)
+    print_structure_sizes("STRUCTURE SIZES AFTER PAIRING", {
+        'network_edges': network_edges,
+        'all_feature_data_lists': all_feature_data_lists
+    })
     
     print(f"Built network graph with {sum(len(e) for e in network_edges.values())} edges")
     print(f"  File index mapping: {file_index_map}")
     print(f"  [Note: Edges were filtered during pairing based on cutoff parameters]")
     
+    # Count unique vertices (features) in network_edges after cutoff filtering
+    # Each feature is identified by (file_idx, feature_idx) tuple
+    unique_vertices = set()
+    for ref_file_idx, edge_list in network_edges.items():
+        for edge in edge_list:
+            # Add reference feature vertex
+            ref_vertex = (edge['ref_file_idx'], edge['current_feature_idx'])
+            unique_vertices.add(ref_vertex)
+            # Add matched feature vertex
+            match_vertex = (edge['match_file_idx'], edge['matched_feature_idx'])
+            unique_vertices.add(match_vertex)
+    
+    total_features_after_filter = len(unique_vertices)
+    print(f"Total unique features (vertices) in network edges after filtering: {total_features_after_filter}")
     # Filter edges by cutoff if specified
     # [OPTIMIZATION] Filtering now happens during Step 4 pairing, not as post-processing
     if args.mz_cutoff is not None and args.rt_cutoff is not None:
@@ -1750,171 +1886,14 @@ def main():
     # Extract and save unpaired vertices (features with no edges in network_edges)
     unpaired_vertices = extract_and_save_unpaired_vertices(network_edges, all_feature_data_lists, args.output_unpaired_json)
     
-    # If skip-matchfinder is enabled, save edges only and exit
-    if args.skip_matchfinder:
-        print("\n  Skipping matchfinder processing (--skip-matchfinder enabled)")
-        print("  Saving edges dictionary with cutoff parameters...")
-        
-        # Save edges dictionary with cutoff params for direct use with build_network_graph.py
-        edges_output_path = args.output_edges_pkl
-        if not edges_output_path:
-            # Infer from output_pkl: replace 'paired_features' with 'edges' or add '_edges' suffix
-            edges_output_path = str(args.output_pkl).replace('paired_features', 'edges')
-            if edges_output_path == args.output_pkl:
-                # If replacement didn't work, add suffix
-                edges_output_path = args.output_pkl.replace('.pkl', '_edges.pkl')
-        
-        # Create wrapper dict with network_edges and cutoff_params
-        edges_with_params = {
-            'network_edges': network_edges,
-            'cutoff_params': {
-                'mz_cutoff': args.mz_cutoff,
-                'rt_cutoff': args.rt_cutoff,
-                'edges_cutoff': args.edges_cutoff
-            }
-        }
-        
-        with open(edges_output_path, 'wb') as f:
-            pickle.dump(edges_with_params, f)
-        print(f"✓ Saved edges dictionary (pickle): {os.path.basename(edges_output_path)}(under skip-matchfinder mode)")
-        
-        # Also save edges dictionary as JSON
-        edges_json_path = args.output_json.replace('paired_features', 'edges')
-        if edges_json_path == args.output_json:
-            # If replacement didn't work, modify the filename
-            edges_json_path = args.output_json.replace('.json', '_edges.json')
-        
-        # DIAGNOSTIC: Add marker to first edge
-        if network_edges:
-            first_file_idx = list(network_edges.keys())[0]
-            if network_edges[first_file_idx]:
-                network_edges[first_file_idx][0]['__DIAGNOSTIC_CODE_EXECUTED__'] = True
-        
-        with open(edges_json_path, 'w') as f:
-            json.dump(network_edges, f, indent=2)
-        print(f"✓ Saved edges dictionary (JSON): {os.path.basename(edges_json_path)}")
-        
-        print(f"\n  Next step: Build network graph with:")
-        print(f"    python build_network_graph.py --input_pkl {os.path.basename(edges_output_path)} --edge_cutoff <DISTANCE>\n")
-        
-        # Restore filenames in JSON before exiting
-        restore_filenames_in_edges_json(edges_json_path, file_index_map)
-        
-        # [DELETION POINT #5] Early exit path: clean up before returning
-        del network_edges
-        del unpaired_vertices
-        gc.collect()
-        return
-    
-    # BUILD CONNECTED COMPONENTS FROM FILTERED EDGES
-    # This is crucial: components are built AFTER edge filtering to ensure
-    # that only features connected by edges passing the cutoff are grouped together
-    print("\n  Building connected components from filtered edges...")
-    mem_before_cc = get_memory_info("Before building connected components", print_details=True)
-    print(f"[DEBUG] network_edges keys: {list(network_edges.keys())}")
-    print(f"[DEBUG] network_edges total edges: {sum(len(edges) for edges in network_edges.values())}")
-    print(f"[DEBUG] all_feature_data_lists length: {len(all_feature_data_lists)}")
-    print(f"[DEBUG] Starting _build_connected_components_from_edges call...")
-    
-    paired_features = _build_connected_components_from_edges(network_edges, all_feature_data_lists)
-    
-    mem_after_cc = get_memory_info("After building connected components", print_details=True)
-    mem_delta = mem_after_cc - mem_before_cc
-    print(f"[DEBUG] Memory delta from connected components: {mem_delta:.1f} MB")
-    print(f"[DEBUG] paired_features length: {len(paired_features)}")
-    print(f"[DEBUG] paired_features first item keys: {paired_features[0].keys() if paired_features else 'EMPTY'}")
-    
-    # [DELETION POINT #4] CRITICAL: all_feature_data_lists no longer used after component building
-    print("[DEBUG] About to delete all_feature_data_lists...")
-    print("Clearing feature data from memory to prevent OOM during output generation...")
-    del all_feature_data_lists
-    gc.collect()
-    print("  ✓ Feature data freed (~500MB)")
-    
-    # Filter features within groups by best inter-feature match score cutoff
-    def filter_features_in_group(match_group):
-        """Remove features that don't have at least one score above cutoff to another feature
-        At this point kind of redundant, off by default. Enable only if you want to remove features that dont meet a euclidian distance-based cutoff to all other features in the group (not just the reference feature)"""
-        # Skip filtering if match_cutoff is None
-        if args.match_cutoff is None:
-            return match_group
-        
-        individual_features = match_group.get('individual_features', [])
-        
-        # Keep only features with at least one score above cutoff
-        filtered_individual = []
-        for feature in individual_features:
-            scores = feature.get('scores_to_features', {})
-            if scores:
-                max_score = max(scores.values())
-                if max_score >= args.match_cutoff:
-                    filtered_individual.append(feature)
-            elif not scores and args.match_cutoff == 0.0:
-                # Keep features with no scores only if cutoff is 0
-                filtered_individual.append(feature)
-        
-        # Update pep_ident to only include those from remaining features
-        remaining_pep_idents = set()
-        for feature in filtered_individual:
-            if 'pep_ident' in feature and feature['pep_ident']:
-                remaining_pep_idents.update(feature['pep_ident'])
-        
-        # OPTIMIZED: Use pre-calculated distances from distances_to_group_features instead of O(n²) recalculation
-        if len(filtered_individual) > 1:
-            # Collect distances already calculated and stored on features
-            distances = []
-            for feature in filtered_individual:
-                dist_dict = feature.get('distances_to_group_features', {})
-                distances.extend(dist_dict.values())
-            
-            if distances:
-                avg_distance = np.mean(distances)
-                match_score = float(np.exp(-avg_distance / 100.0))
-            else:
-                match_score = 1.0
-        else:
-            match_score = 1.0
-        
-        # Update the group with filtered features and recalculated match_score
-        match_group['individual_features'] = filtered_individual
-        match_group['num_files_matched'] = len(filtered_individual)
-        # Use unique files list and add comprehensive features list
-        unique_files_filtered = sorted(list(set(f['filename'] for f in filtered_individual)))
-        all_features_filtered = [f"{f['filename']}_feat{f['_feat_idx']}" for f in filtered_individual]
-        match_group['files'] = unique_files_filtered
-        match_group['all_features'] = all_features_filtered  # NEW: Comprehensive list of all features in group
-        match_group['pep_ident'] = list(remaining_pep_idents) if remaining_pep_idents else None
-        match_group['match_score'] = match_score
-        return match_group
-    
-    # Filter features within each group
-    filtered_features = [filter_features_in_group(f) for f in paired_features]
-    # Remove groups with no features left
-    filtered_features = [f for f in filtered_features if len(f.get('individual_features', [])) > 0]
-    
-    print(f"Filtered to {len(filtered_features)}/{len(paired_features)} groups with features scoring >= {args.match_cutoff}")
-    
-    # Count total features before filtering
-    total_features_before_filter = sum(len(f.get('individual_features', [])) for f in paired_features)
-    total_features_after_filter = sum(len(f.get('individual_features', [])) for f in filtered_features)
-    
-    print(f"Total features before filtering: {total_features_before_filter}")
-    print(f"Total features after filtering: {total_features_after_filter}")
-    
-    # [DEBUG] Track memory around filtering
-    mem_after_filter = get_memory_info("AFTER FILTERING", print_details=True)
-    print(f"[DEBUG] paired_features size estimate: {len(str(paired_features))/1024/1024:.1f} MB")
-    print(f"[DEBUG] filtered_features size estimate: {len(str(filtered_features))/1024/1024:.1f} MB")
-    
-    # Build combined pep_ident and prot_ident lookup from filtered features for export to build_network_graph.py
-    print("\nBuilding combined pep_ident and prot_ident lookup from filtered features...")
+    # Build combined pep_ident and prot_ident lookup from all feature data for export to build_network_graph.py
+    # IMPORTANT: Build this before deleting all_feature_data_lists to avoid losing feature metadata
+    print("\nBuilding combined pep_ident and prot_ident lookup from all features...")
     ident_lookup = {}
-    for group_idx, group in enumerate(filtered_features):
-        individual_features = group.get('individual_features', [])
-        for feature_idx, feature in enumerate(individual_features):
+    for file_idx, file_features in enumerate(all_feature_data_lists):
+        for feat_idx, feature in enumerate(file_features):
             if isinstance(feature, dict):
-                filename = feature.get('filename', f'file_{group_idx}')
-                feat_idx = feature.get('_feat_idx', feature.get('feature_count', feature_idx))
+                filename = feature.get('filename', f'file_{file_idx}')
                 pep_idents = feature.get('pep_ident', [])
                 prot_idents = feature.get('prot_ident', [])
                 x_center = feature.get('x_center', 0.0)
@@ -1929,8 +1908,8 @@ def main():
                 ident_lookup[lookup_key] = {
                     'pep_ident': pep_idents if pep_idents else [],
                     'prot_ident': prot_idents if prot_idents else [],
-                    'x_center': x_center,  # RT value
-                    'y_center': y_center,  # mz value
+                    'x_center': x_center,
+                    'y_center': y_center,
                     'intensity': intensity,
                     'openms_fid': openms_fid,
                     'ms2_scans': ms2_scans,
@@ -1939,130 +1918,30 @@ def main():
     
     print(f"Extracted identifications for {len(ident_lookup)} features")
     
-    # Define pep_ident analysis function (optional)
-    def analyze_pep_ident_matching(groups):
-        """Analyze pep_ident matching patterns in feature groups"""
-        pep_ident_stats = {
-            'total_groups': len(groups),
-            'groups_with_common_pep_idents': 0,
-            'groups_with_mismatching_pep_idents': 0,
-            'groups_with_no_pep_idents': 0,
-            'groups_with_partial_matching': 0,
-            'pep_ident_match_distribution': {}
-        }
-        
-        for group in groups:
-            individual_features = group.get('individual_features', [])
-            if not individual_features:
-                continue
-            
-            # Get all unique pep_idents from all features
-            all_feature_pep_idents = []
-            for feature in individual_features:
-                pep_idents = feature.get('pep_ident', [])
-                all_feature_pep_idents.append(set(pep_idents) if pep_idents else set())
-            
-            # Count how many features have pep_idents
-            features_with_pep = sum(1 for p in all_feature_pep_idents if p)
-            
-            if features_with_pep == 0:
-                pep_ident_stats['groups_with_no_pep_idents'] += 1
-                match_key = 'none'
-            elif features_with_pep == len(individual_features):
-                # All features have pep_idents - check if they share at least one common peptide
-                common_pep_idents = set.intersection(*all_feature_pep_idents) if all_feature_pep_idents else set()
-                if common_pep_idents:
-                    # All features have at least one common pep_ident
-                    pep_ident_stats['groups_with_common_pep_idents'] += 1
-                    match_key = f'common_pep_{features_with_pep}_of_{len(individual_features)}'
-                else:
-                    # All features have pep_idents but no common ones (mismatching)
-                    pep_ident_stats['groups_with_mismatching_pep_idents'] += 1
-                    match_key = f'mismatching_pep_{features_with_pep}_of_{len(individual_features)}'
-            else:
-                pep_ident_stats['groups_with_partial_matching'] += 1
-                match_key = f'partial_{features_with_pep}_of_{len(individual_features)}'
-            
-            # Track distribution
-            pep_ident_stats['pep_ident_match_distribution'][match_key] = \
-                pep_ident_stats['pep_ident_match_distribution'].get(match_key, 0) + 1
-        
-        return pep_ident_stats
-    
-    # Analyze pep_ident matching in groups, just for statistics
-    def analyze_pep_ident_matching(groups):
-        """Analyze pep_ident matching patterns in feature groups"""
-        pep_ident_stats = {
-            'total_groups': len(groups),
-            'groups_with_common_pep_idents': 0,
-            'groups_with_mismatching_pep_idents': 0,
-            'groups_with_no_pep_idents': 0,
-            'groups_with_partial_matching': 0,
-            'pep_ident_match_distribution': {}
-        }
-        
-        for group in groups:
-            individual_features = group.get('individual_features', [])
-            if not individual_features:
-                continue
-            
-            # Get all unique pep_idents from all features
-            all_feature_pep_idents = []
-            for feature in individual_features:
-                pep_idents = feature.get('pep_ident', [])
-                all_feature_pep_idents.append(set(pep_idents) if pep_idents else set())
-            
-            # Count how many features have pep_idents
-            features_with_pep = sum(1 for p in all_feature_pep_idents if p)
-            
-            if features_with_pep == 0:
-                pep_ident_stats['groups_with_no_pep_idents'] += 1
-                match_key = 'none'
-            elif features_with_pep == len(individual_features):
-                # All features have pep_idents - check if they share at least one common peptide
-                common_pep_idents = set.intersection(*all_feature_pep_idents) if all_feature_pep_idents else set()
-                if common_pep_idents:
-                    # All features have at least one common pep_ident
-                    pep_ident_stats['groups_with_common_pep_idents'] += 1
-                    match_key = f'common_pep_{features_with_pep}_of_{len(individual_features)}'
-                else:
-                    # All features have pep_idents but no common ones (mismatching)
-                    pep_ident_stats['groups_with_mismatching_pep_idents'] += 1
-                    match_key = f'mismatching_pep_{features_with_pep}_of_{len(individual_features)}'
-            else:
-                pep_ident_stats['groups_with_partial_matching'] += 1
-                match_key = f'partial_{features_with_pep}_of_{len(individual_features)}'
-            
-            # Track distribution
-            pep_ident_stats['pep_ident_match_distribution'][match_key] = \
-                pep_ident_stats['pep_ident_match_distribution'].get(match_key, 0) + 1
-        
-        return pep_ident_stats
-    
-    # OPTIMIZED: Analyze pep_ident matching only if requested (optional, can be slow)
-    if args.analyze_pep_idents:
-        print("Analyzing pep_ident matching patterns...")
-        pep_ident_stats = analyze_pep_ident_matching(filtered_features)
-    else:
-        # Skip analysis by default (much faster)
-        pep_ident_stats = {'total_groups': len(filtered_features), 'skipped': True}
-    
-    # [DELETION POINT #6] unpaired_vertices no longer used after this point
+    # [DELETION POINT] all_feature_data_lists no longer needed - free memory before saving
+    print("Clearing feature data from memory...")
+    del all_feature_data_lists
     del unpaired_vertices
     gc.collect()
+    print("  ✓ Feature data freed (~500MB)")
     
-    # Save results with statistics
+    # [DIAGNOSTIC] Print memory state after clearing features
+    get_memory_info("AFTER CLEARING FEATURES", print_details=True)
+    print_structure_sizes("STRUCTURE SIZES AFTER FEATURE CLEANUP", {
+        'network_edges': network_edges,
+        'ident_lookup': ident_lookup
+    })
+
+    # Save results with edges and ident_lookup only (no paired_features)
+    # Save results with edges and ident_lookup only (no paired_features)
     print("[DEBUG] Creating output_data dictionary...")
     mem_before_output_create = get_memory_info("BEFORE OUTPUT CREATION", print_details=True)
     
     output_data = {
-        'paired_features': filtered_features,
         'network_edges': network_edges,  # Include network graph structure
-        'pep_ident_statistics': pep_ident_stats,
         'ident_lookup': ident_lookup,  # Combined lookup: {filename_feat_idx: {pep_ident: [...], prot_ident: [...]}}
         'total_features_before_filtering': total_features_before_filtering,  # True count from TSV files before cutoffs
-        'total_features_before_filter': total_features_before_filter,  # Features in groups after pairing (may differ)
-        'total_features_after_filter': total_features_after_filter,
+        'total_features_after_filtering': total_features_after_filter,  # Count of unique features in edges after cutoff filtering
         'cutoff_params': {
             'mz_cutoff': args.mz_cutoff,
             'rt_cutoff': args.rt_cutoff,
@@ -2077,28 +1956,22 @@ def main():
             'postpair_note': 'If postpair_normalize_coordinates=true: distance is original euclidean distance; distance_rescaled is from rescaled coordinate space',
             'match_cutoff': args.match_cutoff,
             'input_files': num_input_files,
-            'skip_matchfinder': args.skip_matchfinder
+            'skip_matchfinder': False  # Always False now (always skip component building)
         }
     }
     
     mem_after_output_create = get_memory_info("AFTER OUTPUT CREATION", print_details=True)
     print(f"[DEBUG] Memory delta for output_data creation: {mem_after_output_create - mem_before_output_create:.1f} MB")
     
-    # OPTIMIZED: Save pickle (fast binary format)
+    # OPTIMIZED: Save pickle (fast binary format) - NO paired_features, only edges and ident_lookup
     print("[DEBUG] Starting pickle save...")
     mem_before_pickle = get_memory_info("BEFORE PICKLE SAVE", print_details=True)
-    print("Saving output (pickle)...")
+    print("Saving output (pickle) - edges and ident_lookup only...")
     with open(args.output_pkl, 'wb') as f:
         pickle.dump(output_data, f)
     mem_after_pickle = get_memory_info("AFTER PICKLE SAVE", print_details=True)
     print(f"[DEBUG] Memory delta for pickle save: {mem_after_pickle - mem_before_pickle:.1f} MB")
-    print(f"✓ Saved paired features (pickle): {os.path.basename(args.output_pkl)}")
-    
-    # [DELETION POINT #7] If skipping JSON output, can free output_data earlier
-    if args.skip_json_output:
-        print("Skipping JSON output - freeing output data...")
-        del output_data
-        gc.collect()
+    print(f"✓ Saved edges and ident_lookup (pickle): {os.path.basename(args.output_pkl)}")
     
     # OPTIMIZED: Skip JSON by default (optional) - JSON serialization of 45K+ features is slow
     if not args.skip_json_output:
@@ -2109,7 +1982,7 @@ def main():
             json.dump(output_data, f, indent=2)
         mem_after_json = get_memory_info("AFTER JSON SAVE", print_details=True)
         print(f"[DEBUG] Memory delta for JSON save: {mem_after_json - mem_before_json:.1f} MB")
-        print(f"✓ Saved paired features (JSON): {os.path.basename(args.output_json)}")
+        print(f"✓ Saved edges and ident_lookup (JSON): {os.path.basename(args.output_json)}")
     else:
         print(f"⊘ Skipped JSON output (--skip_json_output enabled)")
     
@@ -2196,20 +2069,57 @@ def main():
             mem_after_edges_json = get_memory_info("AFTER EDGES JSON SAVE", print_details=True)
             print(f"[DEBUG] Memory delta for edges JSON save: {mem_after_edges_json - mem_before_edges_json:.1f} MB")
             print(f"✓ Saved edges dictionary (JSON): {os.path.basename(edges_json_path)}")
+            
+            # [AGGRESSIVE CLEANUP] Delete the duplicate edges_for_json immediately after saving
+            print("  Cleaning up temporary edges_for_json copy...")
+            del edges_for_json
+            gc.collect()
+            mem_after_cleanup = get_memory_info("AFTER EDGES_FOR_JSON CLEANUP", print_details=False)
+            print(f"    Memory freed: {mem_after_edges_json - mem_after_cleanup:.1f} MB")
         except Exception as e:
             print(f"⊘ Failed to save edges JSON: {e}")
     else:
         print(f"⊘ Skipped edges JSON output (--skip_json_output enabled)")
     
-    # [DELETION POINT #8] Final cleanup after all output operations complete
+    # [DELETION POINT #7] Final cleanup after all output operations complete
     print("Final memory cleanup...")
     del output_data
-    del filtered_features
     del network_edges
     del ident_lookup
-    del pep_ident_stats
     gc.collect()
     print("  ✓ Output data structures freed")
+    
+    # Save metadata JSON (pairing parameters, cutoff info, feature counts)
+    # This contains all metadata from output_data EXCEPT network_edges and ident_lookup
+    print("[DEBUG] Starting metadata JSON save...")
+    metadata_json_path = args.output_json.replace('.json', '_metadata.json')
+    metadata = {
+        'total_features_before_filtering': total_features_before_filtering,
+        'total_features_after_filtering': total_features_after_filter,
+        'cutoff_params': {
+            'mz_cutoff': args.mz_cutoff,
+            'rt_cutoff': args.rt_cutoff,
+            'edges_cutoff': args.edges_cutoff
+        },
+        'pairing_parameters': {
+            'pairing_method': 'kdtree',
+            'best_match_only': True,
+            'distance_calc_before_scaling': args.distance_calc_before_scaling,
+            'normalize_coordinates': normalize_coordinates,
+            'postpair_normalize_coordinates': args.postpair_normalize_coordinates,
+            'postpair_note': 'If postpair_normalize_coordinates=true: distance is original euclidean distance; distance_rescaled is from rescaled coordinate space',
+            'match_cutoff': args.match_cutoff,
+            'input_files': num_input_files,
+            'skip_matchfinder': False
+        }
+    }
+    
+    try:
+        with open(metadata_json_path, 'w') as f:
+            json.dump(metadata, f, indent=2)
+        print(f"✓ Saved pairing metadata: {os.path.basename(metadata_json_path)}")
+    except Exception as e:
+        print(f"✗ Failed to save metadata JSON: {e}")
     
     # NOTE: Filename restoration is now done DURING JSON save (see edges JSON write section above)
     # This eliminates the memory spike from re-reading the entire JSON file

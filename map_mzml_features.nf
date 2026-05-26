@@ -45,14 +45,14 @@ params.mmf_rt_correction_mode = 'pre-kdtree'  // RT correction mode: 'none', 'pr
 params.mmf_rt_correction_json = null  // Path to JSON file with RT correction models (auto-generated from compare_rt_alignment if enabled)
 params.mmf_pairing_rt_source = 'y_center'  // RT source for pairing: 'y_center', 'y_center_geo', 'rt_start', 'rt_end' (default: 'y_center' - the calculated RT center used for KD-tree matching)
 params.mmf_mz_rt_weight_ratio = 0.005338  // Weight ratio for RT relative to m/z in distance calculations (default: 1.0 for equal weighting). Values > 1.0 emphasize RT, < 1.0 emphasize m/z
-params.mmf_rt_alignment_outlier_threshold = 0.99  // Percentile threshold for outlier exclusion (0.0-1.0). 0.95 = keep central 95% of data, exclude outer 5% (default: 0.95). Set to 0 to disable filtering.
+params.mmf_rt_alignment_outlier_threshold = 0.95  // Percentile threshold for outlier exclusion (0.0-1.0). 0.95 = keep central 95% of data, exclude outer 5% (default: 0.95). Set to 0 to disable filtering.
 params.mmf_rt_alignment_one_to_one_only = true  // Only include pep_idents that appear exactly once in both files
 params.mmf_rt_alignment_mz_source = 'start'  // M/Z source for alignment: 'geo_center', 'center', or 'start'
 params.mmf_rt_alignment_rt_source = 'start'  // RT source for alignment: 'geo_center', 'center', or 'start'
 params.mmf_rt_alignment_polynomial_degree = 8  // Polynomial degree for fitting RT correction curves (default: 8)
 params.mmf_rt_alignment_spline_degree = 3  // Spline degree for cubic splines (default: 3, used with spline method), The spline degree controls the order of polynomial for each spline piece: 1 = Linear (straight line segments) - very rigid, 2 = Quadratic - more flexible, 3 = Cubic (default) - smooth, flexible curves, 4+ = Higher order - increasingly wiggly
 params.mmf_rt_alignment_spline_smoothing = 50  // Smoothing factor for splines (default: 100, used with spline method)
-params.mmf_rt_alignment_loess_fraction = 0.01  // LOESS smoothing fraction - proportion of data for local regression (default: 0.3, range 0.01-1.0), Lower values (e.g., 0.1) = tighter fit to data (less smooth), Higher values (e.g., 0.5) = more smoothing
+params.mmf_rt_alignment_loess_fraction = 0.03  // LOESS smoothing fraction - proportion of data for local regression (default: 0.3, range 0.01-1.0), Lower values (e.g., 0.1) = tighter fit to data (less smooth), Higher values (e.g., 0.5) = more smoothing
 params.mmf_rt_alignment_loess_iterations = 100  // LOESS iterations for robustness (default: 3)
 params.mmf_rt_alignment_decimal_points = 40  // Decimal places for polynomial coefficients in equations (default: 35)
 params.mmf_trafoxmls_dir = "results/quantifications/features_with_annotated_identifications"  // Directory containing trafoXML files for AlignTree method (OpenMS RT transformations, optional)
@@ -105,7 +105,7 @@ params.mmf_filter_duplicate_file_vertices = true  // Enable filtering to remove 
 params.mmf_filter_method = 'modularity'  // Filter method: simplified-modularity or modularity
 params.mmf_save_deleted_vertices = true  // Enable intelligent recovery of deleted vertices with weighted cluster selection
 // ConsensusXML Conversion Parameters
-params.mmf_convert_clusters_to_consensusxml = true  // Convert filtered clusters to OpenMS ConsensusXML format
+params.mmf_convert_clusters_to_consensusxml = true  // Convert recovered clusters (after recovery) to OpenMS ConsensusXML format
 // Reproducibility
 params.mmf_random_seed = 42  // Random seed for reproducible results (default: null = non-deterministic)
 // Output directories
@@ -133,9 +133,9 @@ params.mmf_clusters_outdir = "${params.mmf_outdir}/clusters_analysis"  // Output
 // Memory defaults (can be overridden):
 //   - process_mzml_file: 16G
 //   - create_heatmap_image: 20G (adjust based on image size and available RAM)
-//   - extract_feature_data: 16G
-//   - pair_features: 16G
-//   - generate_pairing_report: 8G
+//   - extract_feature_data: 40G
+//   - pair_features: 40G
+//   - generate_pairing_report: 40G
 //
 // If running out of memory, try:
 //   1. Disable heatmap generation: --mmf_generate_heatmap false
@@ -244,7 +244,7 @@ process pair_features {
     """
     tag "feature_pairing"
     container "luxii/unbequant:latest"
-    memory "12G"
+    memory "40G"
     cache 'lenient'
     publishDir "${params.mmf_features_dir}", mode: 'symlink'
 
@@ -253,9 +253,8 @@ process pair_features {
     val(rt_correction_json)
 
     output:
-    tuple path("paired_features.pkl", optional: true), path("paired_features.json", optional: true), 
-          path("paired_features_edges.pkl"), path("paired_features_edges.json", optional: true),
-          path("paired_features*_ident_lookup.json", optional: true),
+    tuple path("paired_features_edges.pkl"), path("paired_features_edges.json", optional: true),
+          path("paired_features_metadata.json"), path("paired_features*_ident_lookup.json", optional: true),
           path("paired_features_unpaired.json", optional: true)
 
     script:
@@ -323,7 +322,7 @@ process pair_features {
     echo "  - params.mmf_rt_alignment_method: '${params.mmf_rt_alignment_method}'"
     echo "  - Actual method being used: '${rt_method}'"
     
-    ${workflow.projectDir}/bin/pair_features.py \
+    ${workflow.projectDir}/bin/pair_features_1.py \
         --input_files ${input_files_arg} \
         --output_pkl paired_features.pkl \
         --output_json paired_features.json \
@@ -346,9 +345,12 @@ process pair_features {
         ${rt_correction_args}
     
     echo "DEBUG: Output files created:"
-    ls -lah paired_features.pkl paired_features_edges.pkl 2>&1
-    [ -f paired_features.json ] && echo "  ✓ paired_features.json" || echo "  ✗ paired_features.json (optional, skipped)"
+    ls -lah paired_features_edges.pkl 2>&1 || echo "✗ paired_features_edges.pkl (expected, required)"
     [ -f paired_features_edges.json ] && echo "  ✓ paired_features_edges.json" || echo "  ✗ paired_features_edges.json (optional, skipped)"
+    [ -f paired_features_ident_lookup.json ] && echo "  ✓ paired_features_ident_lookup.json" || echo "  ✗ paired_features_ident_lookup.json (optional, skipped)"
+    [ -f paired_features_unpaired.json ] && echo "  ✓ paired_features_unpaired.json" || echo "  ✗ paired_features_unpaired.json (optional, skipped)"
+    
+    echo "DEBUG: Component building removed - paired_features.pkl/json no longer generated (intentional optimization)"
     
     """
 }
@@ -356,12 +358,12 @@ process pair_features {
 process feature_pairing_report {
     tag "pairing_report"
     container "luxii/unbequant:latest"
-    memory "8G"
-    cache 'lenient'
+    memory "40G"
+    cache false
     publishDir "${params.mmf_features_dir}", mode: 'symlink'
 
     input:
-    tuple path(paired_pkl), path(paired_json), path(edges_pkl), path(edges_json), val(clusters_json), val(filtered_clusters_json), val(deleted_vertices_json), val(resolution_iterations_json)
+    tuple val(paired_json), path(edges_pkl), path(metadata_json), path(edges_json), val(clusters_json), val(filtered_clusters_json), val(deleted_vertices_json), val(resolution_iterations_json), val(graph_composition_json), val(ident_lookup_json)
 
     output:
     tuple path("pairing_summary.txt"), path("pairing_statistics.csv"), 
@@ -373,6 +375,8 @@ process feature_pairing_report {
     def filtered_clusters_arg = filtered_clusters_json ? "--filtered_clusters_json ${filtered_clusters_json}" : ""
     def deleted_vertices_arg = deleted_vertices_json ? "--deleted_vertices_json ${deleted_vertices_json}" : ""
     def resolution_iterations_arg = resolution_iterations_json ? "--resolution_iterations_json ${resolution_iterations_json}" : ""
+    def graph_composition_arg = graph_composition_json ? "--graph_composition_json ${graph_composition_json}" : ""
+    def ident_lookup_arg = ident_lookup_json ? "--ident_lookup_json ${ident_lookup_json}" : ""
     
     // Pairing parameters
     def mz_cutoff_arg = params.mmf_mz_cutoff != null ? "--mz_cutoff ${params.mmf_mz_cutoff}" : ""
@@ -412,14 +416,12 @@ process feature_pairing_report {
     
     // Post-pairing normalization
     def postpair_normalize_coords_arg = params.mmf_postpair_normalize_coordinates ? "--postpair_normalize_coordinates" : ""
-    
-    // Build input files list for tracking
-    def input_files_arg = "--input_files ${paired_json} ${edges_json}"
+    def input_files_arg = "--input_files ${edges_json}"
     
     """
     ${workflow.projectDir}/bin/generate_pairing_report.py \
-        --paired_json ${paired_json} \
         --edges_json ${edges_json} \
+        --metadata_json ${metadata_json} \
         --output_summary pairing_summary.txt \
         --output_stats pairing_statistics.csv \
         ${html_arg} \
@@ -427,6 +429,8 @@ process feature_pairing_report {
         ${filtered_clusters_arg} \
         ${deleted_vertices_arg} \
         ${resolution_iterations_arg} \
+        ${graph_composition_arg} \
+        ${ident_lookup_arg} \
         ${mz_cutoff_arg} \
         ${rt_cutoff_arg} \
         ${edges_cutoff_arg} \
@@ -462,6 +466,8 @@ process convert_clusters_to_consensusxml {
     """
     Convert filtered cluster data from JSON to OpenMS ConsensusXML format.
     Creates a ConsensusXML file compatible with OpenMS tools.
+    Also includes deleted vertices (as new clusters in original components)
+    and unpaired vertices (as new components).
     """
     tag "clusters_to_consensusxml"
     container "luxii/unbequant:latest"
@@ -471,15 +477,21 @@ process convert_clusters_to_consensusxml {
 
     input:
     path clusters_json
+    path deleted_vertices_json, stageAs: 'deleted_vertices.json'
+    path unpaired_vertices_json, stageAs: 'unpaired_vertices.json'
 
     output:
-    path("${clusters_json.baseName}.consensusXML")
+    path("*.consensusXML")
 
     script:
+    def deleted_arg = deleted_vertices_json ? "--deleted_vertices_json ${deleted_vertices_json}" : ""
+    def unpaired_arg = unpaired_vertices_json ? "--unpaired_vertices_json ${unpaired_vertices_json}" : ""
     """
     ${workflow.projectDir}/bin/clusters_json_to_consensusxml.py \
         --input_json ${clusters_json} \
         --output_xml ${clusters_json.baseName}.consensusXML \
+        ${deleted_arg} \
+        ${unpaired_arg} \
         --mmf_mz_cutoff ${params.mmf_mz_cutoff} \
         --mmf_rt_cutoff ${params.mmf_rt_cutoff} \
         ${params.mmf_edges_cutoff != null ? "--mmf_edges_cutoff ${params.mmf_edges_cutoff}" : ""} \
@@ -521,8 +533,8 @@ process convert_clusters_to_consensusxml {
 process build_network_graph_visualization {
     tag "network_graph"
     cpus 15
-    memory "8G"
-    cache false
+    memory "40G"
+    cache 'lenient'
     publishDir "${params.mmf_features_dir}", mode: 'copy'
 
     input:
@@ -590,7 +602,7 @@ process build_network_graph_visualization {
     def disable_multiprocessing_flag = params.mmf_disable_multiprocessing ? "--disable-multiprocessing" : ""
     
     """
-    python3 ${workflow.projectDir}/bin/build_network_graph.py \
+    python3 ${workflow.projectDir}/bin/build_network_graph_multithread.py \
         --input_pkl ${edges_json} \
         ${output_image_arg} \
         ${output_graphml_arg} \
@@ -828,21 +840,35 @@ workflow map_mzml_features {
         graph_output = Channel.empty()
         consensus_output = Channel.empty()
         if (params.mmf_build_network_graph) {
-            graph_edges_json = paired_output.map { pkl, json, e_pkl, e_json, ident_lookup, unpaired -> e_json.toAbsolutePath().toString() }
+            graph_edges_json = paired_output.map { e_pkl, e_json, metadata_json, ident_lookup, unpaired -> e_json.toAbsolutePath().toString() }
             feature_data_jsons = feature_data.map { name, pkl, json -> json }.collect()
-            ident_lookup_json = paired_output.map { pkl, json, e_pkl, e_json, ident_lookup, unpaired -> ident_lookup ? ident_lookup.toAbsolutePath().toString() : "" }
-            unpaired_json_channel = paired_output.map { pkl, json, e_pkl, e_json, ident_lookup, unpaired -> unpaired ? unpaired.toAbsolutePath().toString() : "" }
+            ident_lookup_json = paired_output.map { e_pkl, e_json, metadata_json, ident_lookup, unpaired -> ident_lookup ? ident_lookup.toAbsolutePath().toString() : "" }
+            unpaired_json_channel = paired_output.map { e_pkl, e_json, metadata_json, ident_lookup, unpaired -> unpaired ? unpaired.toAbsolutePath().toString() : "" }
             graph_output = build_network_graph_visualization(graph_edges_json, feature_data_jsons, ident_lookup_json, unpaired_json_channel)
             // Output tuple: [svg, graphml, gml, edgelist, analysis, composition, clusters, filtered_clusters, deleted_vertices, resolution_iterations, histogram]
             
-            // Step 7a: Convert filtered clusters to ConsensusXML if enabled
+            // Step 7a: Convert recovered clusters to ConsensusXML if enabled
             if (params.mmf_convert_clusters_to_consensusxml) {
-                // Use the actual filtered clusters file from graph_output
-                filtered_clusters_channel = graph_output.map { 
-                    svg, graphml, gml, edgelist, analysis, composition, clusters, filtered_file, deleted, resolution_iterations, histogram ->
-                    filtered_file  // Return the actual file path
+                // Extract recovered clusters, deleted vertices, and unpaired vertices from graph and paired outputs
+                // Prefer recovered clusters (after recovery) over filtered (pre-recovery)
+                // Use multiMap to create separate channels for each process input
+                consensusxml_input = graph_output.combine(paired_output).multiMap {
+                    svg, graphml, gml, edgelist, analysis, composition, clusters, filtered_file, deleted, resolution_iterations, histogram, e_pkl, e_json, metadata_json, ident_lookup, unpaired ->
+                    // Extract recovered clusters from the collection
+                    // clusters collection contains both filtered and recovered variants
+                    def clusters_list = (clusters instanceof Collection) ? clusters.toList() : [clusters]
+                    // Filter out nulls from clusters_list
+                    clusters_list = clusters_list.findAll { it != null }
+                    def recovered_file = clusters_list.find { it.toString().contains('_recovered') }
+                    // Fallback to first clusters file if no _recovered variant found
+                    def clusters_final = recovered_file ?: (clusters_list ? clusters_list.first() : file("${workflow.projectDir}/bin/.empty_clusters.json"))
+                    
+                    clusters: clusters_final
+                    deleted: deleted ? ((deleted instanceof Collection) ? deleted.first() : deleted) : file("${workflow.projectDir}/bin/.empty_deleted.json")
+                    unpaired: unpaired ? ((unpaired instanceof Collection) ? unpaired.first() : unpaired) : file("${workflow.projectDir}/bin/.empty_unpaired.json")
                 }
-                consensus_output = convert_clusters_to_consensusxml(filtered_clusters_channel)
+                
+                consensus_output = convert_clusters_to_consensusxml(consensusxml_input.clusters, consensusxml_input.deleted, consensusxml_input.unpaired)
             } else {
                 consensus_output = Channel.empty()
             }
@@ -865,29 +891,29 @@ workflow map_mzml_features {
                             c_file?.toString() ?: null,
                             f_file?.toString() ?: null,
                             d_file?.toString() ?: null,
-                            r_file?.toString() ?: null
+                            r_file?.toString() ?: null,
+                            composition?.toString() ?: null
                         )
                     }
                 )
-                .map { pkl, json, edges_pkl, edges_json, pep_ident, unpaired, clusters_json, filtered_clusters, deleted_verts, resolution_iters ->
-                    tuple(pkl, json, edges_pkl, edges_json, clusters_json, filtered_clusters, deleted_verts, resolution_iters)
+                .map { edges_pkl, edges_json, metadata_json, ident_lookup, unpaired, clusters_json, filtered_clusters, deleted_verts, resolution_iters, composition_json ->
+                    // paired_json is now optional/absent - pass null
+                    tuple(null, edges_pkl, metadata_json, edges_json, clusters_json, filtered_clusters, deleted_verts, resolution_iters, composition_json, ident_lookup)
                 }
         } else {
             // Step 7: Generate report with paired data only (graph disabled)
             report_input = paired_output
-                .map { pkl, json, edges_pkl, edges_json, pep_ident, unpaired ->
-                    tuple(pkl, json, edges_pkl, edges_json, null, null, null, null)
+                .map { edges_pkl, edges_json, metadata_json, ident_lookup, unpaired ->
+                    // paired_json is now optional/absent - pass null for clustering data
+                    tuple(null, edges_pkl, metadata_json, edges_json, null, null, null, null, null, ident_lookup)
                 }
         }
         pairing_report = feature_pairing_report(report_input)
         
         emit:
             feature_data = feature_data
-            paired_features = paired_output.map { pkl, json, e_pkl, e_json, ident_lookup, unpaired -> pkl }
-            paired_json = paired_output.map { pkl, json, e_pkl, e_json, ident_lookup, unpaired -> json }
-            unpaired_json = paired_output.map { pkl, json, e_pkl, e_json, ident_lookup, unpaired -> unpaired }.flatten()
-            edges_pkl = paired_output.map { pkl, json, e_pkl, e_json, ident_lookup, unpaired -> e_pkl }.flatten()
-            edges_json = paired_output.map { pkl, json, e_pkl, e_json, ident_lookup, unpaired -> e_json }.flatten()
+            edges_pkl = paired_output.map { e_pkl, e_json, metadata_json, ident_lookup, unpaired -> e_pkl }.flatten()
+            edges_json = paired_output.map { e_pkl, e_json, metadata_json, ident_lookup, unpaired -> e_json }.flatten()
             pairing_summary = pairing_report.map { summary, stats, html -> summary }
             pairing_stats = pairing_report.map { summary, stats, html -> stats }
             pairing_html = pairing_report.map { summary, stats, html -> html }

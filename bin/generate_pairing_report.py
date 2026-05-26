@@ -118,26 +118,80 @@ def detect_conflicting_pep_idents_between_clusters(clusters: Dict) -> bool:
     return False  # No shared pep_idents found
 
 
-def generate_pairing_report(paired_json: str, output_summary: str, output_stats: str, edges_json: str = None, output_html: str = None, graph_composition_json: str = None, clusters_json: str = None, filtered_clusters_json: str = None, deleted_vertices_json: str = None, resolution_iterations_json: str = None, parameters: Dict = None):
-    """Generate summary report and statistics from paired features."""
+def generate_pairing_report(paired_json: str, output_summary: str, output_stats: str, edges_json: str = None, output_html: str = None, graph_composition_json: str = None, clusters_json: str = None, filtered_clusters_json: str = None, deleted_vertices_json: str = None, resolution_iterations_json: str = None, ident_lookup_json: str = None, metadata_json: str = None, parameters: Dict = None):
+    """Generate summary report and statistics from network graph composition.
+    
+    NOTE: paired_json parameter is deprecated and ignored. All data comes from graph_composition_json.
+    """
     
     # Initialize early for use throughout function
     conflicting_clusters_list = []
     filtered_cluster_summary = {}
     recovered_cluster_summary = {}
     
-    with open(paired_json, 'r') as f:
-        data = json.load(f)
-    
-    # Load graph composition if provided
+    # Load graph composition (REQUIRED)
     graph_composition = None
-    if graph_composition_json and os.path.exists(graph_composition_json):
+    if not graph_composition_json or not os.path.exists(graph_composition_json):
+        raise ValueError(f"graph_composition_json is required but not provided or file does not exist: {graph_composition_json}")
+    
+    try:
+        with open(graph_composition_json, 'r') as f:
+            graph_composition = json.load(f)
+        if not graph_composition or len(graph_composition) == 0:
+            raise ValueError(f"graph_composition_json file is empty: {graph_composition_json}")
+        
+        print(f"  Loaded graph composition from {os.path.basename(graph_composition_json)}")
+        print(f"  [DEBUG] graph_composition top-level keys: {list(graph_composition.keys())}")
+        comp_summary = graph_composition.get('composition_summary', {})
+        print(f"  [DEBUG] composition_summary keys: {list(comp_summary.keys())}")
+        print(f"  [DEBUG] composition_summary.total_features = {comp_summary.get('total_features', 'NOT FOUND')}")
+        comp_comp = graph_composition.get('component_composition', {})
+        print(f"  [DEBUG] component_composition keys count: {len(comp_comp)}, sum: {sum(comp_comp.values())}")
+    except Exception as e:
+        raise ValueError(f"Could not load graph_composition_json: {e}")
+    
+    # Load metadata_json to get pairing parameters and feature counts
+    total_features_before_filtering = 0
+    unique_features_after_filtering = 0
+    pairing_params = {}
+    
+    if metadata_json and os.path.exists(metadata_json):
         try:
-            with open(graph_composition_json, 'r') as f:
-                graph_composition = json.load(f)
-            print(f"  Loaded graph composition from {os.path.basename(graph_composition_json)}")
+            with open(metadata_json, 'r') as f:
+                metadata = json.load(f)
+            
+            # Extract feature counts
+            total_features_before_filtering = metadata.get('total_features_before_filtering', 0)
+            print(f"  Loaded total_features_before_filtering from metadata_json: {total_features_before_filtering}")
+            unique_features_after_filtering = metadata.get('total_features_after_filtering', 0)
+            print(f"  Loaded unique_features_after_filtering from metadata_json: {unique_features_after_filtering}")
+            
+            # Extract pairing parameters for reporting
+            pairing_params = metadata.get('pairing_parameters', {})
+            print(f"  Loaded pairing parameters from metadata_json")
+            
         except Exception as e:
-            print(f"  Warning: Could not load graph composition: {e}")
+            print(f"  ERROR: Could not load metadata JSON: {e}")
+            print(f"  Continuing with zeros for feature counts")
+    elif paired_json and os.path.exists(paired_json):
+        # Fallback: try to load from paired_json if metadata_json not provided
+        try:
+            with open(paired_json, 'r') as f:
+                paired_data = json.load(f)
+            
+            # Extract total features before filtering (raw TSV count)
+            total_features_before_filtering = paired_data.get('total_features_before_filtering', 0)
+            print(f"  [FALLBACK] Loaded total_features_before_filtering from paired_json: {total_features_before_filtering}")
+            unique_features_after_filtering = paired_data.get('total_features_after_filtering', 0)
+            print(f"  [FALLBACK] Loaded unique_features_after_filtering from paired_json: {unique_features_after_filtering}")
+            
+        except Exception as e:
+            print(f"  Warning: Could not load metadata JSON or paired data: {e}")
+    else:
+        if metadata_json:
+            print(f"  Warning: metadata_json provided but file not found: {metadata_json}")
+        elif paired_json:
+            print(f"  Warning: paired_json provided but file not found: {paired_json}")
     
     # Load cluster data if provided
     clusters_data = None
@@ -169,15 +223,20 @@ def generate_pairing_report(paired_json: str, output_summary: str, output_stats:
     # Load total_unpaired from paired_features_unpaired.json if available
     unpaired_singletons_count = 0
     
-    # Get the real path (follow symlinks) of paired_json to find unpaired file
-    paired_json_real = os.path.realpath(paired_json)
-    paired_dir = os.path.dirname(paired_json_real)
+    # Try to find unpaired JSON in the same directory as edges_json or graph_composition
+    if edges_json:
+        edges_json_real = os.path.realpath(edges_json)
+        search_dir = os.path.dirname(edges_json_real)
+    elif graph_composition_json:
+        composition_real = os.path.realpath(graph_composition_json)
+        search_dir = os.path.dirname(composition_real)
+    else:
+        search_dir = os.getcwd()
     
     # Try multiple strategies to find unpaired JSON
     unpaired_candidates = [
-        os.path.join(paired_dir, 'paired_features_unpaired.json'),
-        paired_json.replace('paired_features.json', 'paired_features_unpaired.json'),
-        os.path.join(paired_dir, 'paired_features.unpaired.json'),
+        os.path.join(search_dir, 'paired_features_unpaired.json'),
+        os.path.join(search_dir, 'edges_unpaired.json'),
     ]
     
     unpaired_json_path = None
@@ -186,9 +245,7 @@ def generate_pairing_report(paired_json: str, output_summary: str, output_stats:
             unpaired_json_path = candidate
             break
     
-    print(f"  [DEBUG] paired_json: {paired_json}")
-    print(f"  [DEBUG] paired_json_real: {paired_json_real}")
-    print(f"  [DEBUG] paired_dir: {paired_dir}")
+    print(f"  [DEBUG] search_dir: {search_dir}")
     print(f"  [DEBUG] unpaired_json_path: {unpaired_json_path}")
     print(f"  [DEBUG] exists: {os.path.exists(unpaired_json_path) if unpaired_json_path else False}")
     if unpaired_json_path and os.path.exists(unpaired_json_path):
@@ -253,48 +310,51 @@ def generate_pairing_report(paired_json: str, output_summary: str, output_stats:
         res_val = parameters.get('mmf_clustering_resolution_parameter')
         optimal_resolution_str = f"{res_val:.4f}" if isinstance(res_val, (int, float)) else str(res_val)
     
-    # Check if this is an edges file format (has numeric keys with lists of edges)
-    is_edges_format = isinstance(data, dict) and all(isinstance(v, list) for v in data.values())
+    # Initialize paired_features as empty (component building was removed for performance)
+    # All data now comes from graph_composition
+    paired_features = []
+    pep_ident_stats = {}
     
-    # Extract pairing parameters
+    # Extract pairing parameters (not in graph_composition, use defaults)
     pairing_parameters = {}
     cutoff_params = {}
     
-    if is_edges_format:
-        # Handle edges format directly
-        paired_features = []
-        for charge_key, edges_list in data.items():
-            paired_features.append({'num_files_matched': 0, 'pep_ident': None})
-        pep_ident_stats = {}
-        total_features_before_filter = len(paired_features)
-        total_features_after_filter = len(paired_features)
-        # Use the paired_json as edges_json if edges_json not provided
-        if not edges_json:
-            edges_json = paired_json
-    # Handle both old format (list) and new format (dict with statistics)
-    elif isinstance(data, dict) and 'paired_features' in data:
-        paired_features = data['paired_features']
-        pep_ident_stats = data.get('pep_ident_statistics', {})
-        total_features_before_filter = data.get('total_features_before_filtering', data.get('total_features_before_filter', len(paired_features)))
-        total_features_after_filter = data.get('total_features_after_filter', sum(len(f.get('individual_features', [])) for f in paired_features))
-        pairing_parameters = data.get('pairing_parameters', {})
-        cutoff_params = data.get('cutoff_params', {})
-    else:
-        paired_features = data
-        pep_ident_stats = {}
-        total_features_before_filter = sum(len(f.get('individual_features', [])) if isinstance(f, dict) else 1 for f in paired_features)
-        total_features_after_filter = total_features_before_filter
+    # Get total features from graph composition
+    # The structure is: composition_summary.total_features
+    composition_summary = graph_composition.get('composition_summary', {})
+    total_features = composition_summary.get('total_features', 0)
+    
+    print(f"  [DEBUG] composition_summary = {composition_summary}")
+    print(f"  [DEBUG] total_features = {total_features}")
+    
+    if total_features == 0:
+        # Fallback: calculate from component_composition by summing all component counts
+        component_composition = graph_composition.get('component_composition', {})
+        total_features = sum(component_composition.values())
+        if total_features > 0:
+            print(f"  [Fallback] Calculated total_features from component_composition: {total_features}")
+        else:
+            print(f"  [ERROR] Both composition_summary.total_features and component_composition sum are 0!")
+            print(f"  [ERROR] graph_composition is likely empty or malformed")
+            print(f"  [ERROR] Full graph_composition: {json.dumps(graph_composition, indent=2)[:1000]}")
+    
+    total_features_before_filter = total_features_before_filtering if total_features_before_filtering > 0 else total_features
+    total_features_after_filter = unique_features_after_filtering if unique_features_after_filtering > 0 else total_features
+    
+    print(f"  Feature counts - Before filtering: {total_features_before_filter}, After filtering: {total_features_after_filter}")
     
     # Calculate percentage of vertices deleted (based on features after filtering)
+    total_deleted = 0
     if total_features_after_filter > 0:
         vertices_deleted_percentage = (total_deleted / total_features_after_filter) * 100
     else:
         vertices_deleted_percentage = 0.0
     
-    print(f"  Processing {len(paired_features)} paired feature groups...")
+    print(f"  Extracted network statistics from graph_composition (total_features={total_features})")
     
     # Extract distances from edges JSON if provided
     distances = []
+    total_paired_groups = 0  # Count of edges (paired feature groups)
     if edges_json and os.path.exists(edges_json):
         try:
             with open(edges_json, 'r') as f:
@@ -304,87 +364,86 @@ def generate_pairing_report(paired_json: str, output_summary: str, output_stats:
                 for edge in edges_list:
                     if 'distance' in edge:
                         distances.append(edge['distance'])
-            print(f"  Extracted {len(distances)} distances from edges file")
+                    total_paired_groups += 1  # Count each edge as a paired group
+            print(f"  Extracted {len(distances)} distances from {total_paired_groups} edges (paired groups)")
         except Exception as e:
             print(f"  Warning: Could not extract distances from edges file: {e}")
     
     # Calculate statistics
-    total_features = len(paired_features)
-    files_matched = [f.get('num_files_matched', 0) for f in paired_features if isinstance(f, dict)]
+    # NOTE: paired_features is always empty now (component building removed)
+    # Use total_features from composition_summary which was already correctly extracted above
+    # DO NOT recalculate as len(paired_features) - it will always be 0
     
-    # Extract intra-group distances from new match structure (distances_to_group_features)
+    files_matched = []  # Empty list since paired_features is empty
+    
+    # Extract intra-group distances from edges (component building was removed)
+    # Intra-group distances are now calculated from the edges themselves
     intra_group_distances = []
-    for match in paired_features:
-        if isinstance(match, dict) and 'individual_features' in match:
-            for feature in match['individual_features']:
-                distances_dict = feature.get('distances_to_group_features', {})
-                intra_group_distances.extend(distances_dict.values())
+    if edges_json and os.path.exists(edges_json):
+        try:
+            with open(edges_json, 'r') as f:
+                edges_data = json.load(f)
+            # Flatten the nested structure to collect all distances
+            for charge_key, edges_list in edges_data.items():
+                for edge in edges_list:
+                    if 'distance' in edge:
+                        intra_group_distances.append(edge['distance'])
+            print(f"  Extracted {len(intra_group_distances)} distances from edges file")
+        except Exception as e:
+            print(f"  Warning: Could not extract distances from edges file: {e}")
     
     avg_intra_distance = sum(intra_group_distances) / len(intra_group_distances) if intra_group_distances else 0
     max_intra_distance = max(intra_group_distances) if intra_group_distances else 0
     min_intra_distance = min(intra_group_distances) if intra_group_distances else 0
     
     # Count features matched across different numbers of files
-    # and analyze file uniqueness and multiplicity within each group
+    # Extract file_match_distribution and file_match_uniqueness from graph_composition
     file_match_distribution = {}
-    file_match_uniqueness = {}  # Track file uniqueness and multiplicity
+    file_match_uniqueness = {}
     
-    for f in paired_features:
-        if isinstance(f, dict):
-            num_files = f.get('num_files_matched', 0)
-            file_match_distribution[num_files] = file_match_distribution.get(num_files, 0) + 1
-            
-            # Analyze file uniqueness and multiplicity for this group
-            if num_files not in file_match_uniqueness:
-                file_match_uniqueness[num_files] = {
-                    'all_unique': 0,  # All files unique (one feature per file)
-                    'with_duplicates': 0,  # At least one file has multiple features
-                    'total': 0,
-                    'file_composition': {},  # file_list -> count
-                    'multiplicity_distribution': {},  # e.g., "1x2,1x1" -> count (1 file with 2, 1 with 1)
-                    'file_appearance': {}  # filename -> count (how many times each file appears in matches)
-                }
-            
-            file_match_uniqueness[num_files]['total'] += 1
-            
-            # Count file occurrences in this group
-            individual_features = f.get('individual_features', [])
-            if individual_features:
-                file_counts = {}  # filename -> count
-                for feat in individual_features:
-                    fname = feat.get('filename')
-                    file_counts[fname] = file_counts.get(fname, 0) + 1
-                
-                # Track file appearance frequency
-                for fname in file_counts.keys():
-                    if fname not in file_match_uniqueness[num_files]['file_appearance']:
-                        file_match_uniqueness[num_files]['file_appearance'][fname] = 0
-                    file_match_uniqueness[num_files]['file_appearance'][fname] += 1
-                
-                # Check if all files are unique (each appears exactly once)
-                multiplicity_list = sorted(file_counts.values(), reverse=True)
-                is_all_unique = all(count == 1 for count in multiplicity_list)
-                
-                if is_all_unique:
-                    file_match_uniqueness[num_files]['all_unique'] += 1
-                else:
-                    file_match_uniqueness[num_files]['with_duplicates'] += 1
-                
-                # Track file composition
-                files_in_group = sorted(set(fname for fname in file_counts.keys()))
-                file_comp_str = ', '.join(files_in_group)
-                if file_comp_str not in file_match_uniqueness[num_files]['file_composition']:
-                    file_match_uniqueness[num_files]['file_composition'][file_comp_str] = 0
-                file_match_uniqueness[num_files]['file_composition'][file_comp_str] += 1
-                
-                # Track multiplicity pattern (e.g., "2x2,1x1" for 2 files with 2 features, 1 with 1)
-                multiplicity_pattern = ','.join([f"{count}x{multiplicity_list.count(count)}" for count in sorted(set(multiplicity_list), reverse=True)])
-                if multiplicity_pattern not in file_match_uniqueness[num_files]['multiplicity_distribution']:
-                    file_match_uniqueness[num_files]['multiplicity_distribution'][multiplicity_pattern] = 0
-                file_match_uniqueness[num_files]['multiplicity_distribution'][multiplicity_pattern] += 1
+    # Extract file_match_distribution (aggregated component counts by num_files)
+    component_composition = graph_composition.get('component_composition', {})
+    for comp_key, count in component_composition.items():
+        # Parse "{num_features}_{num_files}" format, extract last number (file count)
+        parts = comp_key.split('_')
+        if len(parts) >= 2:
+            try:
+                num_files = int(parts[-1])
+                file_match_distribution[num_files] = file_match_distribution.get(num_files, 0) + count
+            except ValueError:
+                continue
     
-    # Count features with peptide identifications
-    features_with_ident = sum(1 for f in paired_features if isinstance(f, dict) and f.get('pep_ident'))
+    print(f"  ✓ Extracted file_match_distribution from graph_composition ({len(file_match_distribution)} categories)")
+    
+    # Use file_match_uniqueness directly from graph_composition (enriched with composition details)
+    file_match_uniqueness = graph_composition.get('file_match_uniqueness', {})
+    print(f"  ✓ Loaded file_match_uniqueness: {list(file_match_uniqueness.keys())} (keys present)")
+    
+    # Debug: Show sample data from file_match_uniqueness
+    for num_files in sorted(file_match_uniqueness.keys()):
+        sample = file_match_uniqueness[num_files]
+        print(f"    [{num_files} files] all_unique={sample.get('all_unique')}, with_duplicates={sample.get('with_duplicates')}, total={sample.get('total')}, compositions={len(sample.get('file_composition', {}))}, multiplicity_patterns={len(sample.get('multiplicity_distribution', {}))}")
+    
+    # Count features with peptide identifications from ident_lookup JSON
+    features_with_ident = 0
+    ident_lookup = None
+    if ident_lookup_json and os.path.exists(ident_lookup_json):
+        try:
+            with open(ident_lookup_json, 'r') as f:
+                ident_lookup = json.load(f)
+            # Count features with non-empty peptide or protein identifications
+            for feature_id, feature_data in ident_lookup.items():
+                if isinstance(feature_data, dict):
+                    pep_ident = feature_data.get('pep_ident', [])
+                    prot_ident = feature_data.get('prot_ident', [])
+                    if (pep_ident and len(pep_ident) > 0) or (prot_ident and len(prot_ident) > 0):
+                        features_with_ident += 1
+            print(f"  Counted {features_with_ident} features with identifications from {os.path.basename(ident_lookup_json)}")
+        except Exception as e:
+            print(f"  Warning: Could not load ident_lookup_json: {e}")
+            features_with_ident = 0
+    else:
+        print(f"  [Note] ident_lookup_json not provided or does not exist - identifications count will be 0")
     
     # Extract file linkage scores from cluster data if available
     file_linkage_scores = None
@@ -475,9 +534,13 @@ def generate_pairing_report(paired_json: str, output_summary: str, output_stats:
         f.write("OVERVIEW\n")
         f.write("-" * 70 + "\n")
         f.write(f"Total paired feature groups: {total_features}\n")
+        f.write(f"Total paired groups (edges): {total_paired_groups}\n")
         f.write(f"Total features before filtering: {total_features_before_filter}\n")
         f.write(f"Total features after filtering: {total_features_after_filter}\n")
-        f.write(f"Features with peptide identifications: {features_with_ident} ({100*features_with_ident/total_features:.1f}%)\n\n")
+        if total_features > 0:
+            f.write(f"Features with peptide identifications: {features_with_ident} ({100*features_with_ident/total_features:.1f}%)\n\n")
+        else:
+            f.write(f"Features with peptide identifications: {features_with_ident} (N/A - no features counted)\n\n")
         
         f.write("INTRA-GROUP DISTANCE STATISTICS\n")
         f.write("-" * 70 + "\n")
@@ -1029,53 +1092,71 @@ def generate_html_report(
             </div>
             """
     
-    # Generate file distribution HTML with clickable bars
+    # Generate file distribution HTML with clickable bars (by component size from composition_summary)
     file_dist_html = """
     <div id="fileDistChart" class="distribution-section">
     """
     
-    # Generate data for JavaScript
+    # Get components_by_size from composition_summary in graph_composition
+    components_by_size = {}
+    if graph_composition and 'composition_summary' in graph_composition:
+        components_by_size = graph_composition['composition_summary'].get('components_by_size', {})
+    
+    # Generate data for JavaScript (indexed by component size)
     file_dist_data = {}
-    for num_files in sorted(file_match_distribution.keys()):
-        count = file_match_distribution[num_files]
-        percentage = 100 * count / total_features
+    # Iterate through components_by_size to get all bars and attach enriched data from file_match_uniqueness
+    for size_key in sorted(components_by_size.keys(), key=lambda x: int(x)):
+        try:
+            comp_size = int(size_key)
+        except ValueError:
+            continue
         
-        uniqueness_info = file_match_uniqueness.get(num_files, {})
+        # Get bar count from components_by_size
+        total_for_size = components_by_size[size_key]
+        percentage = 100 * total_for_size / total_features if total_features > 0 else 0
+        
+        # Get enriched data from file_match_uniqueness[component_size]
+        uniqueness_info = file_match_uniqueness.get(size_key, {})
+        
+        print(f"  DEBUG: comp_size={comp_size}, size_key='{size_key}', bar_count={total_for_size}, has_uniqueness_data={bool(uniqueness_info)}, all_unique={uniqueness_info.get('all_unique')}, comp_count={len(uniqueness_info.get('file_composition', {}))}, mult_count={len(uniqueness_info.get('multiplicity_distribution', {}))}, file_app_count={len(uniqueness_info.get('file_appearance', {}))}")
+        
+        # Get direct data from uniqueness_info
         all_unique_count = uniqueness_info.get('all_unique', 0)
         with_duplicates_count = uniqueness_info.get('with_duplicates', 0)
         file_compositions = uniqueness_info.get('file_composition', {})
         multiplicity_dist = uniqueness_info.get('multiplicity_distribution', {})
+        file_appearance = uniqueness_info.get('file_appearance', {})
         
-        # Create composition breakdown
+        # Create composition breakdown (sorted by count)
         composition_breakdown = []
         for file_comp, comp_count in sorted(file_compositions.items(), key=lambda x: -x[1]):
             composition_breakdown.append({
                 'composition': file_comp,
                 'count': comp_count,
-                'percentage': 100 * comp_count / count if count > 0 else 0
+                'percentage': 100 * comp_count / total_for_size if total_for_size > 0 else 0
             })
         
-        # Create multiplicity breakdown
+        # Create multiplicity breakdown (sorted by count)
         multiplicity_breakdown = []
-        for mult_pattern, mult_count in sorted(multiplicity_dist.items(), key=lambda x: -x[1]):
+        for mult_pattern, mult_count in sorted(multiplicity_dist.items(), key=lambda x: -x[1])[:20]:  # Top 20 patterns
             multiplicity_breakdown.append({
                 'pattern': mult_pattern,
                 'count': mult_count,
-                'percentage': 100 * mult_count / count if count > 0 else 0
+                'percentage': 100 * mult_count / total_for_size if total_for_size > 0 else 0
             })
         
-        # Create file appearance breakdown
-        file_appearance_dist = uniqueness_info.get('file_appearance', {})
+        # Create file appearance breakdown (sorted by count)
         file_appearance_breakdown = []
-        for fname, appearance_count in sorted(file_appearance_dist.items(), key=lambda x: -x[1]):
+        for fname, appearance_count in sorted(file_appearance.items(), key=lambda x: -x[1]):
             file_appearance_breakdown.append({
                 'filename': fname,
                 'count': appearance_count,
-                'percentage': 100 * appearance_count / count if count > 0 else 0
+                'percentage': 100 * appearance_count / total_for_size if total_for_size > 0 else 0
             })
         
-        file_dist_data[num_files] = {
-            'total': count,
+        file_dist_data[f"{comp_size}_features"] = {
+            'component_size': comp_size,
+            'total': total_for_size,
             'percentage': percentage,
             'all_unique': all_unique_count,
             'with_duplicates': with_duplicates_count,
@@ -1086,12 +1167,12 @@ def generate_html_report(
         
         bar_width = min(95, percentage)
         file_dist_html += f"""
-        <div class="distribution-row clickable-bar" onclick="showFileDistributionDetails({num_files})" data-num-files="{num_files}" style="cursor: pointer;">
-            <div class="dist-label">{num_files} file(s)</div>
+        <div class="distribution-row clickable-bar" onclick="showFileDistributionDetails({comp_size})" data-comp-size="{comp_size}" style="cursor: pointer;">
+            <div class="dist-label">{comp_size} feature(s)</div>
             <div class="dist-bar-container">
                 <div class="dist-bar" style="width: {bar_width}%"></div>
             </div>
-            <div class="dist-value">{count} ({percentage:.1f}%)</div>
+            <div class="dist-value">{total_for_size} ({percentage:.1f}%)</div>
             <div class="dist-click-hint">📊 Click for details</div>
         </div>
         """
@@ -2001,54 +2082,8 @@ def generate_html_report(
         </div>
         """
     
-    # Generate graph composition HTML
+    # Graph Composition HTML section removed - not displayed in report
     comp_html = ""
-    if graph_composition:
-        comp_summary = graph_composition.get('composition_summary', {})
-        comp_dist = graph_composition.get('component_composition', {})
-        
-        if comp_summary:
-            # Create composition distribution table
-            comp_rows_html = ""
-            for comp_key in sorted(comp_dist.keys(), key=lambda x: tuple(map(int, x.split('_')))):
-                count = comp_dist[comp_key]
-                parts = comp_key.split('_')
-                num_features = parts[0]
-                num_files = parts[1]
-                comp_rows_html += f"""
-                <div class="comp-row">
-                    <span class="comp-label">{num_features} features from {num_files} file(s)</span>
-                    <span class="comp-count">{count} component{'s' if count != 1 else ''}</span>
-                </div>
-                """
-            
-            comp_html = f"""
-            <div class="stats-section">
-                <h3>Graph Composition</h3>
-                <div class="stats-grid">
-                    <div class="stat-box">
-                        <div class="stat-value">{comp_summary.get('total_components', 0)}</div>
-                        <div class="stat-label">Total Components</div>
-                    </div>
-                    <div class="stat-box">
-                        <div class="stat-value">{comp_summary.get('avg_features_per_component', 0):.2f}</div>
-                        <div class="stat-label">Avg Features/Component</div>
-                    </div>
-                    <div class="stat-box">
-                        <div class="stat-value">{comp_summary.get('avg_files_per_component', 0):.2f}</div>
-                        <div class="stat-label">Avg Files/Component</div>
-                    </div>
-                    <div class="stat-box">
-                        <div class="stat-value">{comp_summary.get('max_features_in_component', 0)}</div>
-                        <div class="stat-label">Max Features/Component</div>
-                    </div>
-                </div>
-                <h4 style="margin-top: 20px; color: #333;">Component Distribution</h4>
-                <div class="composition-list">
-                    {comp_rows_html}
-                </div>
-            </div>
-            """
     
     # Generate distance statistics section
     dist_section_html = ""
@@ -3185,9 +3220,6 @@ def generate_html_report(
             <!-- Clusters with Conflicting Pep-Idents -->
             {conflicting_clusters_html}
             
-            <!-- Graph Composition Statistics -->
-            {comp_html}
-            
             <!-- Peptide Identification Statistics -->
             {ident_html}
             
@@ -3215,9 +3247,13 @@ def generate_html_report(
         // Load file distribution data
         const fileDistData = JSON.parse(document.getElementById('fileDistData').textContent);
         
-        function showFileDistributionDetails(numFiles) {{
-            const data = fileDistData[numFiles];
-            if (!data) return;
+        function showFileDistributionDetails(compSize) {{
+            const dataKey = `${{compSize}}_features`;
+            const data = fileDistData[dataKey];
+            if (!data) {{
+                console.warn(`No data found for component size: ${{compSize}}, key: ${{dataKey}}`);
+                return;
+            }}
             
             // Build modal content
             let modalBody = document.getElementById('modalBody');
@@ -3228,11 +3264,11 @@ def generate_html_report(
                     <div class="detail-stats">
                         <div class="detail-stat-box">
                             <div class="detail-stat-num">${{data.total}}</div>
-                            <div class="detail-stat-label">Total Groups</div>
+                            <div class="detail-stat-label">Total Components</div>
                         </div>
                         <div class="detail-stat-box">
                             <div class="detail-stat-num">${{data.percentage.toFixed(1)}}%</div>
-                            <div class="detail-stat-label">Of All Groups</div>
+                            <div class="detail-stat-label">Of All Components</div>
                         </div>
                     </div>
                 </div>
@@ -3250,8 +3286,8 @@ def generate_html_report(
                         </div>
                     </div>
                     <p style="color: #666; font-size: 0.9em; margin-top: 10px;">
-                        <strong>All Files Unique:</strong> Each of the ${{numFiles}} files appears exactly once<br>
-                        <strong>With Duplicates:</strong> At least one file appears multiple times in the group
+                        <strong>All Files Unique:</strong> Each file in the component appears exactly once<br>
+                        <strong>With Duplicates:</strong> At least one file appears multiple times in the component
                     </p>
                 </div>
             `;
@@ -3328,7 +3364,7 @@ def generate_html_report(
                     <div class="modal-detail-section">
                         <div class="modal-detail-title">File Appearance in Matches</div>
                         <p style="color: #666; font-size: 0.85em; margin-bottom: 15px;">
-                            Shows which files appear in what percentage of the ${{data.total}} matching groups
+                            Shows which files appear in what percentage of the ${{data.total}} matching components
                         </p>
                 `;
                 
@@ -3350,7 +3386,7 @@ def generate_html_report(
                 `;
             }}
             
-            document.getElementById('modalTitle').textContent = `File Distribution Details: ${{numFiles}} File(s)`;
+            document.getElementById('modalTitle').textContent = `File Distribution Details: ${{compSize}} Feature Component(s)`;
             modalBody.innerHTML = html;
             
             // Show modal
@@ -3535,12 +3571,14 @@ def main():
     parser = argparse.ArgumentParser(
         description="Generate summary report of feature pairing results"
     )
-    parser.add_argument("--paired_json", required=True, help="Path to paired features JSON file")
+    parser.add_argument("--paired_json", required=False, default=None, help="Path to paired features JSON file (optional, deprecated - use graph_composition_json instead)")
     parser.add_argument("--output_summary", required=True, help="Output summary text file path")
     parser.add_argument("--output_stats", required=True, help="Output statistics CSV file path")
     parser.add_argument("--edges_json", default=None, help="Path to edges JSON file (for distance statistics and histogram)")
     parser.add_argument("--output_html", default=None, help="Output HTML report file path")
     parser.add_argument("--graph_composition_json", default=None, help="Path to graph composition JSON file (from build_network_graph --output_composition)")
+    parser.add_argument("--metadata_json", default=None, help="Path to metadata JSON file with pairing parameters and feature counts (from pair_features --output_json with _metadata suffix)")
+    parser.add_argument("--ident_lookup_json", default=None, help="Path to ident lookup JSON file (feature ID -> identifications mapping)")
     parser.add_argument("--clusters_json", default=None, help="Path to clusters JSON file (from build_network_graph --output-clusters-json)")
     parser.add_argument("--filtered_clusters_json", default=None, help="Path to filtered clusters JSON file (from build_network_graph with --filter-duplicate-file-vertices)")
     parser.add_argument("--deleted_vertices_json", default=None, help="Path to deleted vertices report JSON file (from build_network_graph filtering)")
@@ -3632,7 +3670,7 @@ def main():
     print(f"Generating Pairing Report")
     print(f"{'='*70}")
     
-    generate_pairing_report(args.paired_json, args.output_summary, args.output_stats, args.edges_json, args.output_html, args.graph_composition_json, args.clusters_json, args.filtered_clusters_json, args.deleted_vertices_json, args.resolution_iterations_json, parameters)
+    generate_pairing_report(args.paired_json, args.output_summary, args.output_stats, args.edges_json, args.output_html, args.graph_composition_json, args.clusters_json, args.filtered_clusters_json, args.deleted_vertices_json, args.resolution_iterations_json, args.ident_lookup_json, args.metadata_json, parameters)
     
     print(f"\n✓ Report saved to {os.path.basename(args.output_summary)}")
     print(f"✓ Statistics saved to {os.path.basename(args.output_stats)}")

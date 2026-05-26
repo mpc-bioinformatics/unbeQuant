@@ -20,7 +20,7 @@ BASE_OUTDIR="results/parameter_grid"
 
 # Define parameter grids
 declare -a RT_METHODS=("aligntree" "loess" "none")
-declare -a WEIGHT_RATIOS=(1.0 0.001)
+declare -a WEIGHT_RATIOS=(1.0 0.005338)
 
 # Create base output directory and log file
 mkdir -p "$BASE_OUTDIR"

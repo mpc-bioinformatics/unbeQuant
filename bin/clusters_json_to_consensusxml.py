@@ -22,6 +22,74 @@ from typing import Dict, List, Tuple
 import numpy as np
 
 
+def load_deleted_vertices_json(json_path: str) -> Dict[int, List[Dict]]:
+    """
+    Load deleted vertices from JSON and group by component_id.
+    Only returns unrecovered vertices.
+    
+    Args:
+        json_path: Path to deleted_vertices.json
+    
+    Returns:
+        Dict mapping component_id -> list of unrecovered deleted vertex dicts
+    """
+    if not json_path:
+        return {}
+    
+    try:
+        with open(json_path, 'r') as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        print(f"✗ ERROR: deleted_vertices_json not found: {json_path}", file=sys.stderr)
+        sys.exit(1)
+    except json.JSONDecodeError as e:
+        print(f"✗ ERROR: Failed to parse deleted_vertices_json: {e}", file=sys.stderr)
+        sys.exit(1)
+    
+    # Extract deleted vertices
+    deleted_by_comp = {}
+    deleted_dict = data.get('deleted_by_component', {})
+    recovered_vertices_set = {v['vertex_id'] for v in data.get('recovered_vertices', [])}
+    
+    for comp_str, comp_info in deleted_dict.items():
+        comp_id = int(comp_str)
+        vertices = comp_info.get('vertices', [])
+        
+        # Filter to only unrecovered vertices
+        unrecovered = [v for v in vertices if v.get('vertex_id') not in recovered_vertices_set]
+        
+        if unrecovered:
+            deleted_by_comp[comp_id] = unrecovered
+    
+    return deleted_by_comp
+
+
+def load_unpaired_vertices_json(json_path: str) -> List[Dict]:
+    """
+    Load unpaired vertices from JSON.
+    
+    Args:
+        json_path: Path to unpaired_vertices.json
+    
+    Returns:
+        List of unpaired vertex dicts
+    """
+    if not json_path:
+        return []
+    
+    try:
+        with open(json_path, 'r') as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        print(f"✗ ERROR: unpaired_vertices_json not found: {json_path}", file=sys.stderr)
+        sys.exit(1)
+    except json.JSONDecodeError as e:
+        print(f"✗ ERROR: Failed to parse unpaired_vertices_json: {e}", file=sys.stderr)
+        sys.exit(1)
+    
+    return data.get('unpaired_vertices', [])
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Convert clusters JSON to ConsensusXML format"
@@ -35,6 +103,16 @@ def parse_args():
         "--output_xml",
         required=True,
         help="Output ConsensusXML file"
+    )
+    parser.add_argument(
+        "--deleted_vertices_json",
+        default=None,
+        help="Optional: JSON file with deleted vertices to add as singletons"
+    )
+    parser.add_argument(
+        "--unpaired_vertices_json",
+        default=None,
+        help="Optional: JSON file with unpaired vertices to add as singletons"
     )
     
     # Workflow parameters from map_mzml_features.nf
@@ -203,7 +281,9 @@ def create_consensus_xml(
     id_to_filename: Dict[int, str],
     output_file: str,
     input_json_file: str = None,
-    workflow_params: Dict = None
+    workflow_params: Dict = None,
+    deleted_vertices: Dict[int, List[Dict]] = None,
+    unpaired_vertices: List[Dict] = None
 ):
     """
     Create ConsensusXML content from cluster data.
@@ -378,7 +458,9 @@ def create_consensus_xml(
     
     xml_lines.append('    <consensusElementList>')
     
-    # Process each component and its clusters
+    # =========================================================================
+    # STEP 1: Process normal components/clusters from filtered clusters JSON
+    # =========================================================================
     for component_key, component in data.items():
         component_id = component.get('component_id', 0)
         
@@ -445,12 +527,131 @@ def create_consensus_xml(
             xml_lines.append('            </groupedElementList>')
             xml_lines.append('        </consensusElement>')
     
+    # =========================================================================
+    # STEP 2: Add deleted vertices as new clusters to their original components
+    # =========================================================================
+    deleted_count = 0
+    if deleted_vertices:
+        for comp_id in sorted(deleted_vertices.keys()):
+            deleted_verts = deleted_vertices[comp_id]
+            
+            # Find max cluster_id in this component
+            max_cluster_id = -1
+            if f"component_{comp_id}" in data:
+                comp_data = data[f"component_{comp_id}"]
+                for cluster_key in comp_data.get('clusters', {}).keys():
+                    cluster_id_num = int(cluster_key.replace('cluster_', ''))
+                    max_cluster_id = max(max_cluster_id, cluster_id_num)
+            
+            # Add each deleted vertex as a new cluster
+            for idx, vertex in enumerate(deleted_verts):
+                new_cluster_id = max_cluster_id + idx + 1
+                deleted_count += 1
+                
+                # Generate element ID
+                consensus_id = generate_consensus_element_id(comp_id, new_cluster_id)
+                
+                # For singleton: use single vertex data
+                rt = vertex.get('y_center', 0.0)
+                mz = vertex.get('x_center', 0.0)
+                intensity = vertex.get('intensity', 0.0)
+                charge = vertex.get('charge', 0)
+                filename = vertex.get('filename', 'unknown')
+                openms_fid = vertex.get('openms_fid', '')
+                feature_id = openms_fid.replace('f_', '') if openms_fid.startswith('f_') else openms_fid
+                
+                # Get map_id for this file
+                map_id = filename_to_id.get(filename, -1)
+                if map_id == -1:
+                    print(f"Warning: Could not find map_id for deleted vertex from {filename}")
+                    continue
+                
+                # Create singleton consensus element with quality=0.0
+                xml_lines.append(
+                    '        <consensusElement id="{}" quality="0.0" charge="{}">'.format(
+                        consensus_id, charge
+                    )
+                )
+                xml_lines.append(
+                    '            <centroid rt="{}" mz="{}" it="{}"/>'.format(rt, mz, intensity)
+                )
+                xml_lines.append('            <groupedElementList>')
+                xml_lines.append(
+                    '                <element map="{}" id="{}" rt="{}" mz="{}" it="{}" charge="{}"/>'.format(
+                        map_id, feature_id, rt, mz, intensity, charge
+                    )
+                )
+                xml_lines.append('            </groupedElementList>')
+                xml_lines.append('        </consensusElement>')
+                total_elements += 1
+    
+    # =========================================================================
+    # STEP 3: Add unpaired vertices as new components
+    # =========================================================================
+    unpaired_count = 0
+    if unpaired_vertices:
+        # Find max component_id from data
+        max_comp_id = -1
+        for component_key in data.keys():
+            comp_id_num = int(component_key.replace('component_', ''))
+            max_comp_id = max(max_comp_id, comp_id_num)
+        
+        # Start new component IDs from max_comp_id + 1
+        for idx, vertex in enumerate(unpaired_vertices):
+            new_comp_id = max_comp_id + idx + 1
+            new_cluster_id = 0  # Always 0 for singleton
+            unpaired_count += 1
+            
+            # Generate element ID
+            consensus_id = generate_consensus_element_id(new_comp_id, new_cluster_id)
+            
+            # For singleton: use single vertex data
+            rt = vertex.get('y_center', 0.0)
+            mz = vertex.get('x_center', 0.0)
+            intensity = vertex.get('intensity', 0.0)
+            charge = vertex.get('charge', 0)
+            filename = vertex.get('filename', 'unknown')
+            openms_fid = vertex.get('openms_fid', '')
+            feature_id = openms_fid.replace('f_', '') if openms_fid.startswith('f_') else openms_fid
+            
+            # Get map_id for this file
+            map_id = filename_to_id.get(filename, -1)
+            if map_id == -1:
+                print(f"Warning: Could not find map_id for unpaired vertex from {filename}")
+                continue
+            
+            # Create singleton consensus element with quality=0.0
+            xml_lines.append(
+                '        <consensusElement id="{}" quality="0.0" charge="{}">'.format(
+                    consensus_id, charge
+                )
+            )
+            xml_lines.append(
+                '            <centroid rt="{}" mz="{}" it="{}"/>'.format(rt, mz, intensity)
+            )
+            xml_lines.append('            <groupedElementList>')
+            xml_lines.append(
+                '                <element map="{}" id="{}" rt="{}" mz="{}" it="{}" charge="{}"/>'.format(
+                    map_id, feature_id, rt, mz, intensity, charge
+                )
+            )
+            xml_lines.append('            </groupedElementList>')
+            xml_lines.append('        </consensusElement>')
+            total_elements += 1
+    
     xml_lines.append('    </consensusElementList>')
     xml_lines.append('</consensusXML>')
     
     # Write to file
     with open(output_file, 'w') as f:
         f.write('\n'.join(xml_lines))
+    
+    # Print summary
+    print(f"\n✓ ConsensusXML element summary:")
+    print(f"  Normal clusters: {total_elements - deleted_count - unpaired_count}")
+    print(f"  Deleted vertex singletons: {deleted_count}")
+    print(f"  Unpaired vertex singletons: {unpaired_count}")
+    print(f"  Total elements: {total_elements}")
     
     return total_elements
 
@@ -461,6 +662,27 @@ def main():
     # Load JSON data
     print(f"Loading cluster data from {args.input_json}...")
     data = load_json_clusters(args.input_json)
+    
+    # Load deleted vertices if provided
+    deleted_vertices = None
+    if args.deleted_vertices_json:
+        print(f"Loading deleted vertices from {args.deleted_vertices_json}...")
+        deleted_vertices = load_deleted_vertices_json(args.deleted_vertices_json)
+        if deleted_vertices:
+            total_deleted = sum(len(v) for v in deleted_vertices.values())
+            print(f"  ✓ Loaded {total_deleted} unrecovered deleted vertices")
+        else:
+            print(f"  ✓ No unrecovered deleted vertices found")
+    
+    # Load unpaired vertices if provided
+    unpaired_vertices = None
+    if args.unpaired_vertices_json:
+        print(f"Loading unpaired vertices from {args.unpaired_vertices_json}...")
+        unpaired_vertices = load_unpaired_vertices_json(args.unpaired_vertices_json)
+        if unpaired_vertices:
+            print(f"  ✓ Loaded {len(unpaired_vertices)} unpaired vertices")
+        else:
+            print(f"  ✓ No unpaired vertices found")
     
     # Build filename mapping
     print("Building filename mapping...")
@@ -511,9 +733,13 @@ def main():
         'mmf_random_seed': args.mmf_random_seed,
     }
     
-    # Create ConsensusXML
+    # Create ConsensusXML with deleted and unpaired vertices
     print(f"Converting clusters to ConsensusXML format...")
-    total_elements = create_consensus_xml(data, filename_to_id, id_to_filename, args.output_xml, args.input_json, workflow_params)
+    total_elements = create_consensus_xml(
+        data, filename_to_id, id_to_filename, args.output_xml, args.input_json, workflow_params,
+        deleted_vertices=deleted_vertices,
+        unpaired_vertices=unpaired_vertices
+    )
     
     print(f"✓ Successfully created ConsensusXML with {total_elements} consensus elements")
     print(f"  Output: {args.output_xml}")

@@ -19,6 +19,7 @@ from pdb import set_trace as bp
 import time
 from multiprocessing import Pool, get_context, Value, Lock
 import random
+from collections import deque
 
 try:
     import igraph as ig
@@ -47,6 +48,16 @@ vertex_attrs = None
 vertex_to_cluster_map = None
 filter_method = None
 component_cluster_info = None
+
+# ============================================================================
+# GLOBAL COMPLEXITY LIMITER
+# Prevents multiple large components from loading simultaneously in memory
+# All workers check against this limit before processing each batch
+# ============================================================================
+GLOBAL_PROCESSING_COMPLEXITY = 0
+GLOBAL_COMPLEXITY_LOCK = Lock()
+MAX_GLOBAL_PROCESSING_COMPLEXITY = 50000  # ~250-500MB per configuration
+MINIMUM_SINGLE_BATCH = 5000  # Allow minimum batch size even if over limit
 
 
 def load_edges_from_paired_features(paired_features_file: str) -> List[Dict]:
@@ -862,69 +873,50 @@ def export_degree_distribution_histogram(graph: ig.Graph, vertex_attrs: Dict, ou
 
 def analyze_graph_composition(graph: ig.Graph, vertex_attrs: Dict) -> Dict:
     """
-    Analyze graph composition with detailed file and feature multiplicity information.
+    Analyze graph composition: how many connected components have how many features and files.
     
-    Returns enriched statistics including file uniqueness, multiplicity patterns, and composition breakdown
-    needed for interactive visualization:
+    Returns a dictionary with statistics like:
     {
         "component_composition": {
-            "3_3": 5,  # 5 components with 3 features from 3 files (aggregated)
+            "3_features_2_files": 5,  # 5 components with 3 features from 2 files
+            "4_features_3_files": 2,  # 2 components with 4 features from 3 files
             ...
         },
-        "composition_summary": {... overall stats ...},
-        "file_match_uniqueness": {
-            "2": {  # component_size (2 features per component)
-                "all_unique": 4,  # components where each file has exactly 1 feature
-                "with_duplicates": 1,  # components where any file has 2+ features
-                "total": 5,
-                "file_composition": {
-                    "file1.tsv, file2.tsv": 4,  # composition pattern -> count
-                    "file1.tsv, file3.tsv": 1,
-                },
-                "multiplicity_distribution": {
-                    "1x2": 4,  # 4 components with pattern: each file has 1 feature
-                    "2x1": 1,  # 1 component: one file has 2
-                },
-                "file_appearance": {
-                    "file1.tsv": 5,  # how many components of size 2 include this file
-                    "file2.tsv": 4,
-                    "file3.tsv": 1,
-                }
-            },
-            "3": {...},
-            ...
+        "composition_summary": {
+            "total_components": 10,
+            "total_features": 35,
+            "avg_features_per_component": 3.5,
+            "avg_files_per_component": 2.1,
+            "max_features_in_component": 10,
+            "max_files_in_component": 3,
+            "components_by_size": {
+                "1": 2,  # 2 components with 1 feature
+                "2": 5,  # 5 components with 2 features
+                "3": 3,  # 3 components with 3 features
+            }
         }
     }
     """
     if graph is None or graph.vcount() == 0:
-        return {
-            'component_composition': {},
-            'composition_summary': {},
-            'file_match_uniqueness': {}
-        }
+        return {'component_composition': {}, 'composition_summary': {}}
     
     components = graph.components()
     composition_map = {}  # Key: f"{num_features}_{num_files}", Value: count
-    file_match_uniqueness_by_size = {}  # component_size -> detailed analysis
     features_per_component = []
     files_per_component = []
     components_by_size = {}  # Key: num_features, Value: count
     
     for component_vertices in components:
-        # Count files and analyze file multiplicity in this component
-        file_counts = {}  # filename -> count of features from that file
-        feature_ids = []  # Track all feature IDs in component
-        
+        # Count unique files in this component
+        unique_files = set()
         for vertex_id in component_vertices:
             filename = vertex_attrs[vertex_id]['filename']
-            feature_id = vertex_attrs[vertex_id].get('feature_id', f'v{vertex_id}')
-            file_counts[filename] = file_counts.get(filename, 0) + 1
-            feature_ids.append(feature_id)
+            unique_files.add(filename)
         
         num_features = len(component_vertices)
-        num_files = len(file_counts)
+        num_files = len(unique_files)
         
-        # Create composition key for aggregate counting
+        # Create composition key
         comp_key = f"{num_features}_{num_files}"
         composition_map[comp_key] = composition_map.get(comp_key, 0) + 1
         
@@ -934,50 +926,6 @@ def analyze_graph_composition(graph: ig.Graph, vertex_attrs: Dict) -> Dict:
         # Track components by size
         size_key = str(num_features)
         components_by_size[size_key] = components_by_size.get(size_key, 0) + 1
-        
-        # Initialize uniqueness tracking for this component size if needed
-        if size_key not in file_match_uniqueness_by_size:
-            file_match_uniqueness_by_size[size_key] = {
-                'all_unique': 0,
-                'with_duplicates': 0,
-                'total': 0,
-                'file_composition': {},
-                'multiplicity_distribution': {},
-                'file_appearance': {}
-            }
-        
-        # Track this component
-        file_match_uniqueness_by_size[size_key]['total'] += 1
-        
-        # Check if all files are unique (each appears exactly once)
-        multiplicities = sorted(file_counts.values(), reverse=True)
-        is_all_unique = all(count == 1 for count in multiplicities)
-        
-        if is_all_unique:
-            file_match_uniqueness_by_size[size_key]['all_unique'] += 1
-        else:
-            file_match_uniqueness_by_size[size_key]['with_duplicates'] += 1
-        
-        # Track file composition (which files are in this component)
-        files_in_group = sorted(set(file_counts.keys()))
-        file_comp_str = ', '.join(files_in_group)
-        if file_comp_str not in file_match_uniqueness_by_size[size_key]['file_composition']:
-            file_match_uniqueness_by_size[size_key]['file_composition'][file_comp_str] = 0
-        file_match_uniqueness_by_size[size_key]['file_composition'][file_comp_str] += 1
-        
-        # Track multiplicity pattern (e.g., "1x3" for 3 files each with 1 feature, or "2x1,1x1")
-        # Format: count of unique multiplicities, repeated as needed
-        multiplicity_pattern = ','.join([f"{mult}x{multiplicities.count(mult)}" 
-                                        for mult in sorted(set(multiplicities), reverse=True)])
-        if multiplicity_pattern not in file_match_uniqueness_by_size[size_key]['multiplicity_distribution']:
-            file_match_uniqueness_by_size[size_key]['multiplicity_distribution'][multiplicity_pattern] = 0
-        file_match_uniqueness_by_size[size_key]['multiplicity_distribution'][multiplicity_pattern] += 1
-        
-        # Track file appearance (which files appear in this component size)
-        for fname in file_counts.keys():
-            if fname not in file_match_uniqueness_by_size[size_key]['file_appearance']:
-                file_match_uniqueness_by_size[size_key]['file_appearance'][fname] = 0
-            file_match_uniqueness_by_size[size_key]['file_appearance'][fname] += 1
     
     # Build summary statistics
     summary = {
@@ -994,10 +942,8 @@ def analyze_graph_composition(graph: ig.Graph, vertex_attrs: Dict) -> Dict:
     
     return {
         'component_composition': composition_map,
-        'composition_summary': summary,
-        'file_match_uniqueness': file_match_uniqueness_by_size
+        'composition_summary': summary
     }
-
 
 
 def _compute_cluster_edge_weights(subgraph: ig.Graph, weight_mode: str) -> List[float]:
@@ -1216,15 +1162,11 @@ def evaluate_resolution(graph: ig.Graph, vertex_attrs: Dict,
                        apply_filtering: bool = False,
                        filter_method: str = 'simplified-modularity',
                        total_features_after_filter: int = None,
-                       unpaired_vertices: List[Dict] = None,
+                       unpaired_singletons_count: int = 0,
                        num_cores: int = None,
                        use_multiprocessing: bool = True,
                        initial_seed: int = 42,
-                       mega_complexity_threshold: float = 10000,
-                       iteration_output_dir: str = None,
-                       iteration_num: int = None,
-                       pre_computed_analysis: Dict = None,
-                       pre_computed_composition: Dict = None) -> Dict:
+                       mega_complexity_threshold: float = 10000) -> Dict:
     """
     Evaluate clustering quality at a given resolution parameter.
     
@@ -1239,15 +1181,14 @@ def evaluate_resolution(graph: ig.Graph, vertex_attrs: Dict,
         apply_filtering: Whether to apply duplicate vertex filtering
         filter_method: Method for filtering (simplified-modularity or modularity)
         total_features_after_filter: Total features after filtering for percentage calculation
-        unpaired_vertices: List of unpaired vertex dictionaries (default: None/empty)
+        unpaired_singletons_count: Number of unpaired singleton vertices to include in avg_cluster_size calculation
     
     Returns:
         Dictionary with metrics: {
             'resolution': float,
             'vertices_deleted': int,
             'avg_cluster_size': float,
-            'score': float,
-            'iteration_dir': str
+            'score': float
         }
     """
     # Reset random seed for this resolution to ensure deterministic clustering
@@ -1300,7 +1241,6 @@ def evaluate_resolution(graph: ig.Graph, vertex_attrs: Dict,
     # RECOVERY PHASE: Use real edge-based recovery
     # Deleted vertices are added back to clusters they're most strongly connected to
     total_recovered = 0
-    recovery_map = None
     if deleted_list:
         # Use the filtered map if available, otherwise build from current component_cluster_info
         recovery_map = filtered_vertex_map
@@ -1326,32 +1266,14 @@ def evaluate_resolution(graph: ig.Graph, vertex_attrs: Dict,
     # Calculate unrecovered deleted vertices (these become singleton clusters)
     unrecovered_deleted = deleted_vertices - total_recovered
     
-    # Count pep_ident conflicts and duplicates
-    clusters_with_conflicting_pep_idents = 0
-    components_with_cluster_pep_ident_duplicates = 0
-    
-    for comp_id, comp_info in component_cluster_info.items():
-        # Check for inter-cluster pep_ident duplicates
-        if comp_info['num_clusters'] > 1:  # Only for multi-cluster components
-            if detect_cluster_pep_ident_duplicates_in_component(comp_info, vertex_attrs):
-                components_with_cluster_pep_ident_duplicates += 1
-        
-        # Check for intra-cluster conflicts
-        for cluster_id, vertex_list in comp_info.get('clusters', {}).items():
-            if detect_conflicting_pep_idents_in_cluster(vertex_list, vertex_attrs):
-                clusters_with_conflicting_pep_idents += 1
-    
-    # Create cluster recovered distribution (after recovery)
-    cluster_recovered_final = create_cluster_size_distribution(all_cluster_sizes)
-    
-    # Calculate unpaired/unrecovered singletons count for metrics
-    unpaired_count = len(unpaired_vertices) if unpaired_vertices else 0
-    total_singletons = unpaired_count + unrecovered_deleted
-    
     # Include unpaired singletons AND unrecovered deleted vertices in average cluster size calculation
     # Both become singleton (size 1) clusters
+    total_singletons = unpaired_singletons_count + unrecovered_deleted
     total_size_sum = sum(all_cluster_sizes) + total_singletons  
     total_cluster_count = len(all_cluster_sizes) + total_singletons 
+    
+    # DEBUG: Print singleton and cluster count metrics
+    print(f"[DEBUG] total_recovered={total_recovered}, deleted_vertices={deleted_vertices}, unrecovered_deleted={unrecovered_deleted}, total_singletons={total_singletons}, total_size_sum={total_size_sum}, total_cluster_count={total_cluster_count}")
     
     # avg_cluster_size is calculated AFTER recovery - includes recovered single-vertex clusters
     # Also includes unpaired singletons and unrecovered deleted vertices (all treated as clusters of size 1)
@@ -1372,92 +1294,30 @@ def evaluate_resolution(graph: ig.Graph, vertex_attrs: Dict,
     
     avg_modularity = sum(modularity_values) / len(modularity_values) if modularity_values else 0.0
     
-    # DEBUG: Print singleton and cluster count metrics
-    print(f"[DEBUG] total_recovered={total_recovered}, deleted_vertices={deleted_vertices}, unrecovered_deleted={unrecovered_deleted}, total_singletons={total_singletons}, total_size_sum={total_size_sum}, total_cluster_count={total_cluster_count}")
+    # Count pep_ident conflicts and duplicates
+    clusters_with_conflicting_pep_idents = 0
+    components_with_cluster_pep_ident_duplicates = 0
     
-    # Add singleton clusters (unpaired + unrecovered) to the distribution for metrics
+    for comp_id, comp_info in component_cluster_info.items():
+        # Check for inter-cluster pep_ident duplicates
+        if comp_info['num_clusters'] > 1:  # Only for multi-cluster components
+            if detect_cluster_pep_ident_duplicates_in_component(comp_info, vertex_attrs):
+                components_with_cluster_pep_ident_duplicates += 1
+        
+        # Check for intra-cluster conflicts
+        for cluster_id, vertex_list in comp_info.get('clusters', {}).items():
+            if detect_conflicting_pep_idents_in_cluster(vertex_list, vertex_attrs):
+                clusters_with_conflicting_pep_idents += 1
+    
+    # Create cluster recovered distribution (after recovery)
+    cluster_recovered_final = create_cluster_size_distribution(all_cluster_sizes)
+    
+    # Add singleton clusters (unpaired + unrecovered) to the distribution
     if total_singletons > 0:
         cluster_recovered_final[1] = cluster_recovered_final.get(1, 0) + total_singletons
     
     # Note: lambda will be passed in main function for scoring
     # For now, just return the metrics
-    
-    # SAVE recovered state BEFORE adding singletons (for clusters_recovered.json export)
-    import copy
-    component_cluster_info_recovered = copy.deepcopy(component_cluster_info)
-    
-    # Also save filtered state (in case there's no actual filtering, use this for clusters_filtered.json)
-    component_cluster_info_filtered = copy.deepcopy(component_cluster_info) if not filtered_cluster_info else None
-    
-    # ===== PHASE 2a: Add real unpaired singletons to cluster structures (for consistency with metrics) =====
-    # The metrics already count unpaired singletons in avg_cluster_size calculation
-    # So the JSON files should also include them to be consistent
-    # Use the existing function to add real unpaired vertices as singleton clusters
-    if unpaired_vertices:
-        create_singleton_clusters_for_unpaired(
-            unpaired_vertices,
-            component_cluster_info,
-            vertex_to_cluster_map,
-            vertex_attrs,
-            next_vertex_id=max(vertex_to_cluster_map.keys()) + 1 if vertex_to_cluster_map else 0,
-            next_component_id=max(component_cluster_info.keys()) + 1 if component_cluster_info else 0
-        )
-    
-    # ===== PHASE 2: Save clustering results to iteration directory (if requested) =====
-    iteration_dir = None
-    if iteration_output_dir is not None and iteration_num is not None:
-        iteration_dir = f"{iteration_output_dir}/iteration_{iteration_num}"
-        try:
-            os.makedirs(iteration_dir, exist_ok=True)
-            
-            # Export clusters (before filtering/recovery applied)
-            export_clusters_to_json(vertex_to_cluster_map, component_cluster_info, vertex_attrs,
-                                   f"{iteration_dir}/clusters_fraction1.0.json")
-            
-            # Export filtered clusters (after filtering, before recovery)
-            if filtered_cluster_info:
-                export_filtered_clusters_to_json(filtered_vertex_map if filtered_vertex_map else vertex_to_cluster_map,
-                                                filtered_cluster_info, vertex_attrs,
-                                                f"{iteration_dir}/clusters.json")
-            else:
-                # If no filtering, export from pre-singleton copy
-                export_filtered_clusters_to_json(vertex_to_cluster_map, component_cluster_info_filtered, vertex_attrs,
-                                                f"{iteration_dir}/clusters.json")
-            
-            # Export recovered clusters (after recovery, before unpaired singletons)
-            if 'component_cluster_info_recovered' in locals():
-                export_clusters_to_json(recovery_map if recovery_map else vertex_to_cluster_map, 
-                                       component_cluster_info_recovered, vertex_attrs,
-                                       f"{iteration_dir}/clusters_recovered.json")
-            
-            # Save deleted vertices report
-            if deleted_list:
-                save_deleted_vertices_report(deleted_list, 
-                                            output_dir=f"{iteration_dir}/deleted_vertices.json",
-                                            filter_method=filter_method,
-                                            num_clusters_with_recoveries=0,  # Will be calculated if needed
-                                            total_recovered=total_recovered)
-            else:
-                # Create empty deleted_vertices.json if no deletions
-                with open(f"{iteration_dir}/deleted_vertices.json", 'w') as f:
-                    json.dump({'summary': {'total_deleted': 0, 'total_recovered': 0}}, f, indent=2)
-            
-            # Save graph analysis (pre-computed, just copy to keep consistency)
-            if pre_computed_analysis:
-                analysis_path = f"{iteration_dir}/graph_analysis_fraction1.0.json"
-                with open(analysis_path, 'w') as f:
-                    json.dump(pre_computed_analysis, f, indent=2)
-            
-            # Save graph composition (pre-computed, just copy to keep consistency)
-            if pre_computed_composition:
-                composition_path = f"{iteration_dir}/graph_composition_fraction1.0.json"
-                with open(composition_path, 'w') as f:
-                    json.dump(pre_computed_composition, f, indent=2)
-            
-        except Exception as e:
-            print(f"\n✗ ERROR: Failed to save iteration {iteration_num} results to {iteration_dir}")
-            print(f"  Error: {str(e)}")
-            raise  # Hard stop as per user specification
     
     return {
         'resolution': resolution,
@@ -1473,7 +1333,13 @@ def evaluate_resolution(graph: ig.Graph, vertex_attrs: Dict,
         'initial_cluster_distribution': initial_cluster_distribution,
         'filtered_cluster_distribution': filtered_cluster_distribution,
         'cluster_recovered_final': cluster_recovered_final,
-        'iteration_dir': iteration_dir if iteration_dir else None
+        # Include clustering info for reuse in final processing (avoid re-clustering)
+        '_clustering_data': {
+            'vertex_to_cluster_map': vertex_to_cluster_map,
+            'component_cluster_info': component_cluster_info,
+            'filtered_vertex_map': filtered_vertex_map if filtered_vertex_map else {},
+            'filtered_cluster_info': filtered_cluster_info if filtered_cluster_info else {}
+        }
     }
 
 
@@ -1491,13 +1357,10 @@ def select_optimal_resolution(graph: ig.Graph, vertex_attrs: Dict,
                              resolution_tolerance: float = 1e-5,
                              optimization_metric: str = 'combined',
                              output_iterations_path: str = None,
-                             unpaired_vertices: List[Dict] = None,
+                             unpaired_singletons_count: int = 0,
                              num_cores: int = None,
                              initial_seed: int = 42,
-                             mega_complexity_threshold: float = 10000,
-                             iteration_output_dir: str = None,
-                             pre_computed_analysis: Dict = None,
-                             pre_computed_composition: Dict = None) -> Tuple[float, Dict, List, Dict, int]:
+                             mega_complexity_threshold: float = 10000) -> Tuple[float, Dict, List]:
     """
     Automatically select optimal resolution parameter using Brent's method (scipy).
     
@@ -1556,10 +1419,9 @@ def select_optimal_resolution(graph: ig.Graph, vertex_attrs: Dict,
         else:  # 'combined'
             return metrics_dict['avg_cluster_size'] - lambda_param * metrics_dict['vertices_deleted_ratio']
     
-    # Storage for iteration history and best iteration tracking
+    # Storage for iteration history
     iteration_history = []
     call_count = [0]  # Use list to allow modification in nested function
-    best_iteration_num = None  # Track which iteration (1-indexed) is best
     
     def objective_function_wrapper(resolution):
         """
@@ -1583,14 +1445,10 @@ def select_optimal_resolution(graph: ig.Graph, vertex_attrs: Dict,
             apply_filtering=apply_filtering,
             filter_method=filter_method,
             total_features_after_filter=total_features_after_filter,
-            unpaired_vertices=unpaired_vertices,
+            unpaired_singletons_count=unpaired_singletons_count,
             num_cores=num_cores,
             initial_seed=initial_seed,
-            mega_complexity_threshold=mega_complexity_threshold,
-            iteration_output_dir=iteration_output_dir,
-            iteration_num=iteration,
-            pre_computed_analysis=pre_computed_analysis,
-            pre_computed_composition=pre_computed_composition
+            mega_complexity_threshold=mega_complexity_threshold
         )
         score = compute_score(metrics)
         metrics['score'] = score
@@ -1615,7 +1473,8 @@ def select_optimal_resolution(graph: ig.Graph, vertex_attrs: Dict,
             'components_with_cluster_pep_ident_duplicates': metrics.get('components_with_cluster_pep_ident_duplicates', 0),
             'initial_cluster_distribution': metrics.get('initial_cluster_distribution', {}),
             'filtered_cluster_distribution': metrics.get('filtered_cluster_distribution', {}),
-            'cluster_recovered_final': metrics.get('cluster_recovered_final', {})
+            'cluster_recovered_final': metrics.get('cluster_recovered_final', {}),
+            '_clustering_data': metrics.get('_clustering_data', {})  # Store clustering for reuse
         })
         
         # Return negative score (scipy minimizes, we want to maximize)
@@ -1634,8 +1493,6 @@ def select_optimal_resolution(graph: ig.Graph, vertex_attrs: Dict,
     
     # Find best metrics from iteration history (highest score)
     best_iteration = max(iteration_history, key=lambda x: x['score'])
-    best_iteration_num = best_iteration['iteration']  # Extract iteration number (1-indexed)
-    
     best_metrics = {
         'resolution': best_iteration['resolution'],
         'vertices_deleted': best_iteration['vertices_deleted'],
@@ -1652,9 +1509,7 @@ def select_optimal_resolution(graph: ig.Graph, vertex_attrs: Dict,
     }
     
     # Get clustering data if available (for reuse to avoid re-clustering)
-    # NOTE: In Phase 2 refactoring, clustering data is saved to disk per iteration.
-    # Returning empty dict here; final processing will load from disk if needed.
-    best_clustering_data = {}  # No longer stored in iteration_history
+    best_clustering_data = best_iteration.get('_clustering_data', {})
     
     # Print summary
     print(f"\n{'='*70}")
@@ -1693,7 +1548,7 @@ def select_optimal_resolution(graph: ig.Graph, vertex_attrs: Dict,
             json.dump(iterations_output, f, indent=2)
         print(f"  Saved iteration history: {output_iterations_path}")
     
-    return best_resolution, best_metrics, iteration_history, best_clustering_data, best_iteration_num
+    return best_resolution, best_metrics, iteration_history, best_clustering_data
 
 
 def grid_search_resolution(graph: ig.Graph, vertex_attrs: Dict,
@@ -1710,13 +1565,10 @@ def grid_search_resolution(graph: ig.Graph, vertex_attrs: Dict,
                           lambda_param: float = 0.1,
                           optimization_metric: str = 'combined',
                           output_iterations_path: str = None,
-                          unpaired_vertices: List[Dict] = None,
+                          unpaired_singletons_count: int = 0,
                           num_cores: int = None,
                           initial_seed: int = 42,
-                          mega_complexity_threshold: float = 10000,
-                          iteration_output_dir: str = None,
-                          pre_computed_analysis: Dict = None,
-                          pre_computed_composition: Dict = None) -> Tuple[float, Dict, List, Dict, int]:
+                          mega_complexity_threshold: float = 10000) -> Tuple[float, Dict, List]:
     """
     Automatically select optimal resolution parameter using grid search.
     
@@ -1769,15 +1621,10 @@ def grid_search_resolution(graph: ig.Graph, vertex_attrs: Dict,
     best_resolution = None
     best_score = None
     best_metrics = None
-    best_iteration_num = None  # Track which iteration (1-indexed) is best
-    # NOTE: In Phase 2 refactoring, clustering data is saved to disk per iteration.
-    # No longer storing _clustering_data in metrics; will be loaded from disk as needed.
-    best_clustering_data = {}  # Empty dict for consistency with select_optimal_resolution
+    best_clustering_data = None  # Store clustering from best iteration to avoid re-clustering
     
     for iteration, current_resolution in enumerate(resolution_values):
-        # iteration is 0-indexed from enumerate; convert to 1-indexed for consistency
-        iteration_num = iteration + 1
-        print(f"  [{iteration_num:2d}/{num_points}] Evaluating resolution={current_resolution:.4f}...", end='', flush=True)
+        print(f"  [{iteration+1:2d}/{num_points}] Evaluating resolution={current_resolution:.4f}...", end='', flush=True)
         
         # Evaluate current resolution
         metrics = evaluate_resolution(
@@ -1790,14 +1637,10 @@ def grid_search_resolution(graph: ig.Graph, vertex_attrs: Dict,
             apply_filtering=apply_filtering,
             filter_method=filter_method,
             total_features_after_filter=total_features_after_filter,
-            unpaired_vertices=unpaired_vertices,
+            unpaired_singletons_count=unpaired_singletons_count,
             num_cores=num_cores,
             initial_seed=initial_seed,
-            mega_complexity_threshold=mega_complexity_threshold,
-            iteration_output_dir=iteration_output_dir,
-            iteration_num=iteration_num,
-            pre_computed_analysis=pre_computed_analysis,
-            pre_computed_composition=pre_computed_composition
+            mega_complexity_threshold=mega_complexity_threshold
         )
         
         # Calculate score based on selected optimization metric
@@ -1818,7 +1661,7 @@ def grid_search_resolution(graph: ig.Graph, vertex_attrs: Dict,
         
         # Track iteration
         iteration_history.append({
-            'iteration': iteration_num,
+            'iteration': iteration + 1,
             'resolution': current_resolution,
             'vertices_deleted': metrics['vertices_deleted'],
             'vertices_recovered': metrics.get('recovered_vertices', 0),
@@ -1838,9 +1681,7 @@ def grid_search_resolution(graph: ig.Graph, vertex_attrs: Dict,
             best_score = score
             best_resolution = current_resolution
             best_metrics = metrics
-            best_iteration_num = iteration_num  # Track best iteration number (1-indexed)
-            # NOTE: In Phase 2 refactoring, clustering data is saved to disk per iteration.
-            # No longer storing _clustering_data in metrics.
+            best_clustering_data = metrics.get('_clustering_data', {})  # Save clustering from best iteration
             print(f"    ✓ New best!")
         else:
             print(f"")
@@ -1880,7 +1721,7 @@ def grid_search_resolution(graph: ig.Graph, vertex_attrs: Dict,
             json.dump(iterations_output, f, indent=2)
         print(f"  Saved iteration history: {output_iterations_path}")
     
-    return best_resolution, best_metrics, iteration_history, best_clustering_data, best_iteration_num
+    return best_resolution, best_metrics, iteration_history, best_clustering_data
 
 
 def cluster_graph_independent_components(graph: ig.Graph, vertex_attrs: Dict, 
@@ -2071,17 +1912,12 @@ def export_clusters_to_json(vertex_to_cluster_map: Dict, component_cluster_info:
                     'y_center': vertex_info.get('y_center', 0.0),
                     'intensity': vertex_info.get('intensity', 0.0),
                     'openms_fid': vertex_info.get('openms_fid', ''),
-                    'charge': vertex_info.get('charge', 0),
-                    'pep_ident': vertex_info.get('pep_ident', []),
-                    'prot_ident': vertex_info.get('prot_ident', []),
-                    'ms2_scans': vertex_info.get('ms2_scans', '')
+                    'charge': vertex_info.get('charge', 0)
                 })
             
             clusters_output[comp_key]['clusters'][cluster_key] = {
                 'cluster_id': cluster_id,
                 'num_vertices': len(vertex_ids),
-                'pep_ident': aggregate_cluster_pep_idents(cluster_vertices),
-                'prot_ident': aggregate_cluster_prot_idents(cluster_vertices),
                 'vertices': cluster_vertices
             }
     
@@ -2595,6 +2431,51 @@ def _init_worker(worker_index, num_cpus):
         print(f"[WORKER {pid}] CPU pinning failed: {e}", file=sys.stderr, flush=True)
 
 
+# ============================================================================
+# GLOBAL COMPLEXITY LIMITER HELPER FUNCTIONS
+# ============================================================================
+
+def check_and_reserve_capacity(complexity_needed: int, worker_id: int) -> bool:
+    """
+    Try to reserve capacity for a batch. Returns True if reserved, False if would exceed limit.
+    Thread-safe via GLOBAL_COMPLEXITY_LOCK.
+    
+    Args:
+        complexity_needed: Estimated combinations for this batch
+        worker_id: Worker process ID for logging
+        
+    Returns:
+        True if capacity reserved, False if insufficient capacity
+    """
+    global GLOBAL_PROCESSING_COMPLEXITY
+    with GLOBAL_COMPLEXITY_LOCK:
+        available = MAX_GLOBAL_PROCESSING_COMPLEXITY - GLOBAL_PROCESSING_COMPLEXITY
+        if complexity_needed <= available:
+            GLOBAL_PROCESSING_COMPLEXITY += complexity_needed
+            print(f"  [RESERVE] Worker {worker_id}: Reserved {complexity_needed}. "
+                  f"Global: {GLOBAL_PROCESSING_COMPLEXITY}/{MAX_GLOBAL_PROCESSING_COMPLEXITY}", 
+                  flush=True)
+            return True
+    return False
+
+
+def release_capacity(complexity_freed: int, worker_id: int) -> None:
+    """
+    Release capacity after batch completes processing.
+    Thread-safe via GLOBAL_COMPLEXITY_LOCK.
+    
+    Args:
+        complexity_freed: Complexity from completed batch to release
+        worker_id: Worker process ID for logging
+    """
+    global GLOBAL_PROCESSING_COMPLEXITY
+    with GLOBAL_COMPLEXITY_LOCK:
+        GLOBAL_PROCESSING_COMPLEXITY -= complexity_freed
+        print(f"  [RELEASE] Worker {worker_id}: Released {complexity_freed}. "
+              f"Global: {GLOBAL_PROCESSING_COMPLEXITY}/{MAX_GLOBAL_PROCESSING_COMPLEXITY}", 
+              flush=True)
+
+
 def _lazy_worker_with_self_batching(metadata_stream):
     """
     Module-level worker function for TRUE LAZY LOADING + WORKER-SIDE BATCHING.
@@ -2612,6 +2493,7 @@ def _lazy_worker_with_self_batching(metadata_stream):
     import gc
     
     # Access globals set by _init_worker in this worker's process
+
     global edge_index, vertex_attrs, vertex_to_cluster_map, filter_method, component_cluster_info, graph
     
     # ===== WORKER TIMING =====
@@ -2702,6 +2584,7 @@ def _lazy_worker_with_self_batching(metadata_stream):
     batch_count = 0
     batch_times = []
     total_metadata_processed = 0
+    delayed_batches = deque()  # Queue for batches that exceed global complexity limit
     
     current_batch = []
     current_complexity = 0
@@ -2714,29 +2597,72 @@ def _lazy_worker_with_self_batching(metadata_stream):
         # Log progress for tracking
         if idx % 100 == 0 and idx > 0:
             print(f"[PID {worker_pid}] Processing work_items: {idx}/{len(metadata_list)}, "
-                  f"current_batch_size={len(current_batch)}, current_complexity={current_complexity:.2e}", 
+                  f"current_batch_size={len(current_batch)}, current_complexity={current_complexity:.2e}, "
+                  f"delayed_queue_size={len(delayed_batches)}", 
                   flush=True)
         
         # Would adding this metadata exceed the batch limit?
         if current_complexity + combo_est > COMBINATIONS_BATCH_LIMIT and current_batch:
-            # Process current batch and start a new one (WITHOUT building all work_items)
-            batch_count += 1
-            batch_size = len(current_batch)
-            batch_start = time.time()
-            print(f"[PID {worker_pid}] Processing batch {batch_count}: {batch_size} components, "
-                  f"complexity={current_complexity:.2e}", flush=True)
-            # Build only the work_items in THIS batch, then process immediately
-            batch_work_items = [build_work_item_from_metadata(m) for m in current_batch]
-            batch_results = [_filter_component_worker(item) for item in batch_work_items]
-            batch_elapsed = time.time() - batch_start
-            batch_times.append(batch_elapsed)
-            for result in batch_results:
-                result['__worker_pid'] = worker_pid
-                result['__batch_num'] = batch_count
-                result['__batch_elapsed_ms'] = int(batch_elapsed * 1000)
-                results.append(result)  # Append to result list
-            print(f"[PID {worker_pid}] ✓ Batch {batch_count} complete in {batch_elapsed:.2f}s; "
-                  f"collected {len(batch_results)} results", flush=True)
+            # ===== BATCH READY TO PROCESS =====
+            # Check global complexity limit before processing
+            if check_and_reserve_capacity(current_complexity, worker_pid):
+                # Process batch immediately (capacity available)
+                batch_count += 1
+                batch_size = len(current_batch)
+                batch_start = time.time()
+                print(f"[PID {worker_pid}] Processing batch {batch_count}: {batch_size} components, "
+                      f"complexity={current_complexity:.2e}", flush=True)
+                # Build only the work_items in THIS batch, then process immediately
+                batch_work_items = [build_work_item_from_metadata(m) for m in current_batch]
+                batch_results = [_filter_component_worker(item) for item in batch_work_items]
+                batch_elapsed = time.time() - batch_start
+                batch_times.append(batch_elapsed)
+                for result in batch_results:
+                    result['__worker_pid'] = worker_pid
+                    result['__batch_num'] = batch_count
+                    result['__batch_elapsed_ms'] = int(batch_elapsed * 1000)
+                    results.append(result)  # Append to result list
+                print(f"[PID {worker_pid}] ✓ Batch {batch_count} complete in {batch_elapsed:.2f}s; "
+                      f"collected {len(batch_results)} results", flush=True)
+                # Release capacity
+                release_capacity(current_complexity, worker_pid)
+                
+                # ===== FLUSH DELAYED BATCHES IF CAPACITY AVAILABLE =====
+                # Try to process any queued batches that now have room
+                while delayed_batches:
+                    delayed_batch_metadata, delayed_complexity = delayed_batches[0]
+                    
+                    if check_and_reserve_capacity(delayed_complexity, worker_pid):
+                        # Dequeue and process
+                        delayed_batches.popleft()
+                        batch_count += 1
+                        batch_size = len(delayed_batch_metadata)
+                        batch_start = time.time()
+                        print(f"[PID {worker_pid}] Processing DELAYED batch {batch_count}: {batch_size} components, "
+                              f"complexity={delayed_complexity:.2e}", flush=True)
+                        batch_work_items = [build_work_item_from_metadata(m) for m in delayed_batch_metadata]
+                        batch_results = [_filter_component_worker(item) for item in batch_work_items]
+                        batch_elapsed = time.time() - batch_start
+                        batch_times.append(batch_elapsed)
+                        for result in batch_results:
+                            result['__worker_pid'] = worker_pid
+                            result['__batch_num'] = batch_count
+                            result['__batch_elapsed_ms'] = int(batch_elapsed * 1000)
+                            results.append(result)
+                        print(f"[PID {worker_pid}] ✓ Delayed batch {batch_count} complete in {batch_elapsed:.2f}s; "
+                              f"collected {len(batch_results)} results", flush=True)
+                        release_capacity(delayed_complexity, worker_pid)
+                    else:
+                        # Not enough capacity for next delayed batch, stop trying
+                        print(f"[PID {worker_pid}] Delayed batch still waiting (insufficient capacity)", 
+                              flush=True)
+                        break
+            else:
+                # Insufficient global capacity - queue this batch for later
+                print(f"[PID {worker_pid}] Batch queued due to insufficient global capacity "
+                      f"(complexity={current_complexity:.2e})", flush=True)
+                delayed_batches.append((current_batch, current_complexity))
+            
             # Clear batch and metadata to free memory
             current_batch = []
             batch_work_items = []  # Explicit free
@@ -2751,23 +2677,74 @@ def _lazy_worker_with_self_batching(metadata_stream):
     
     # Process final batch
     if current_batch:
-        batch_count += 1
-        batch_size = len(current_batch)
-        batch_start = time.time()
-        print(f"[PID {worker_pid}] Processing final batch {batch_count}: {batch_size} components, "
-              f"complexity={current_complexity:.2e}", flush=True)
-        # Build only the work_items in final batch, then process
-        batch_work_items = [build_work_item_from_metadata(m) for m in current_batch]
-        batch_results = [_filter_component_worker(item) for item in batch_work_items]
-        batch_elapsed = time.time() - batch_start
-        batch_times.append(batch_elapsed)
-        for result in batch_results:
-            result['__worker_pid'] = worker_pid
-            result['__batch_num'] = batch_count
-            result['__batch_elapsed_ms'] = int(batch_elapsed * 1000)
-            results.append(result)  # Append to result list
-        print(f"[PID {worker_pid}] ✓ Final batch {batch_count} complete in {batch_elapsed:.2f}s; "
-              f"collected {len(batch_results)} results", flush=True)
+        # Try to reserve capacity for final batch
+        if check_and_reserve_capacity(current_complexity, worker_pid):
+            batch_count += 1
+            batch_size = len(current_batch)
+            batch_start = time.time()
+            print(f"[PID {worker_pid}] Processing final batch {batch_count}: {batch_size} components, "
+                  f"complexity={current_complexity:.2e}", flush=True)
+            # Build only the work_items in final batch, then process
+            batch_work_items = [build_work_item_from_metadata(m) for m in current_batch]
+            batch_results = [_filter_component_worker(item) for item in batch_work_items]
+            batch_elapsed = time.time() - batch_start
+            batch_times.append(batch_elapsed)
+            for result in batch_results:
+                result['__worker_pid'] = worker_pid
+                result['__batch_num'] = batch_count
+                result['__batch_elapsed_ms'] = int(batch_elapsed * 1000)
+                results.append(result)  # Append to result list
+            print(f"[PID {worker_pid}] ✓ Final batch {batch_count} complete in {batch_elapsed:.2f}s; "
+                  f"collected {len(batch_results)} results", flush=True)
+            release_capacity(current_complexity, worker_pid)
+            
+            # ===== FINAL FLUSH OF DELAYED BATCHES =====
+            while delayed_batches:
+                delayed_batch_metadata, delayed_complexity = delayed_batches[0]
+                if check_and_reserve_capacity(delayed_complexity, worker_pid):
+                    delayed_batches.popleft()
+                    batch_count += 1
+                    batch_size = len(delayed_batch_metadata)
+                    batch_start = time.time()
+                    print(f"[PID {worker_pid}] Processing DELAYED batch {batch_count}: {batch_size} components, "
+                          f"complexity={delayed_complexity:.2e}", flush=True)
+                    batch_work_items = [build_work_item_from_metadata(m) for m in delayed_batch_metadata]
+                    batch_results = [_filter_component_worker(item) for item in batch_work_items]
+                    batch_elapsed = time.time() - batch_start
+                    batch_times.append(batch_elapsed)
+                    for result in batch_results:
+                        result['__worker_pid'] = worker_pid
+                        result['__batch_num'] = batch_count
+                        result['__batch_elapsed_ms'] = int(batch_elapsed * 1000)
+                        results.append(result)
+                    print(f"[PID {worker_pid}] ✓ Delayed batch {batch_count} complete in {batch_elapsed:.2f}s; "
+                          f"collected {len(batch_results)} results", flush=True)
+                    release_capacity(delayed_complexity, worker_pid)
+                else:
+                    # Can't process next delayed batch - force process with minimum threshold
+                    delayed_batch_metadata, delayed_complexity = delayed_batches.popleft()
+                    batch_count += 1
+                    batch_size = len(delayed_batch_metadata)
+                    batch_start = time.time()
+                    print(f"[PID {worker_pid}] FORCE Processing final DELAYED batch {batch_count}: "
+                          f"{batch_size} components, complexity={delayed_complexity:.2e}", flush=True)
+                    GLOBAL_PROCESSING_COMPLEXITY = 0  # Reset to allow final batch (safeguard)
+                    batch_work_items = [build_work_item_from_metadata(m) for m in delayed_batch_metadata]
+                    batch_results = [_filter_component_worker(item) for item in batch_work_items]
+                    batch_elapsed = time.time() - batch_start
+                    batch_times.append(batch_elapsed)
+                    for result in batch_results:
+                        result['__worker_pid'] = worker_pid
+                        result['__batch_num'] = batch_count
+                        result['__batch_elapsed_ms'] = int(batch_elapsed * 1000)
+                        results.append(result)
+                    print(f"[PID {worker_pid}] ✓ Final delayed batch {batch_count} complete in "
+                          f"{batch_elapsed:.2f}s; collected {len(batch_results)} results", flush=True)
+        else:
+            # Final batch queued (shouldn't happen normally, but safeguard for edge case)
+            print(f"[PID {worker_pid}] WARN: Final batch queued due to capacity limit", flush=True)
+            delayed_batches.append((current_batch, current_complexity))
+        
         current_batch = []
         batch_work_items = []  # Explicit free
         batch_results = []      # Explicit free
@@ -2915,7 +2892,7 @@ def _evaluate_candidates_batch(candidates_batch, comp_idx, batch_num, comp_verti
 # Components are grouped into batches where sum(complexity) <= limit
 # This ensures bounded RAM usage across all workers processing work simultaneously
 # 50,000 combinations per batch = ~250MB-1GB per worker (depends on candidate sizes)
-COMBINATIONS_BATCH_LIMIT = 50000  # Increased to 5 million for worker-side batching (reduce IPC overhead)
+COMBINATIONS_BATCH_LIMIT = 10000  # Increased to 5 million for worker-side batching (reduce IPC overhead)
 # ============================================================================
 
 
@@ -3362,7 +3339,7 @@ def filter_duplicate_file_vertices(graph: ig.Graph, vertex_to_cluster_map: Dict,
             # Each worker gets its own subset of metadata and builds work_items on-demand
             # OPTIMIZATION: Use 8 workers to maximize throughput with manageable IPC overhead
             # 8 workers on 15 cores leaves headroom for system tasks
-            num_workers = min(max(2, 6), cores_to_use)  # Use 8 workers if available, min 2, max available cores
+            num_workers = min(max(2, 10), cores_to_use)  # Use 8 workers if available, min 2, max available cores
             
             print(f"Multiprocessing optimization: Using {num_workers} workers (reduced from {cores_to_use - 1} to minimize IPC overhead)", flush=True)
             print(f"Each worker processes batches up to {COMBINATIONS_BATCH_LIMIT:,} combinations\n", flush=True)
@@ -3418,8 +3395,6 @@ def filter_duplicate_file_vertices(graph: ig.Graph, vertex_to_cluster_map: Dict,
                     # Create Pool with ONLY CPU pinning initializer
                     # Global data structures (edge_index, vertex_attrs, etc.) are inherited via fork
                     # This saves ~2GB that would be wasted on copying in initargs!
-                    # TODO refactor!
-                    # TODO 
                     pool = Pool(processes=num_workers, 
                                initializer=init_worker_wrapper, 
                                initargs=(worker_counter, counter_lock, cores_to_use))
@@ -3438,7 +3413,6 @@ def filter_duplicate_file_vertices(graph: ig.Graph, vertex_to_cluster_map: Dict,
                     results_received = 0
                     
                     # Stream results directly without batch collection to reduce memory
-                    # TODO Check if that works - maybe overloads ram - try queue?
                     for chunk_results in pool.imap_unordered(
                         _lazy_worker_with_self_batching,
                         [iter(chunk) for chunk in metadata_chunks],
@@ -3706,18 +3680,19 @@ def _generate_filter_candidates(comp_idx: int, clusters_with_duplicates: Dict, v
     num_duplicate_clusters = len(clusters_with_duplicates)
     combo_estimate = 1
     use_heuristic = False  # Track whether heuristic should be used
-    # COMPLEXITY ESTIMATION for heuristic decision
-    # Estimate the number of possible combinations (WITHOUT early break - let it run to completion)
-    num_duplicate_clusters = len(clusters_with_duplicates)
-    combo_estimate = 1
-    use_heuristic = False  # Track whether heuristic should be used
     for cluster_id in clusters_with_duplicates:
         file_vertex_map = clusters_with_duplicates[cluster_id]
-        num_dup_options = [len(vids) for vids in file_vertex_map.values() if len(vids) > 1]
-        for x in num_dup_options:
-            combo_estimate *= x
-        if combo_estimate >= mega_complexity_threshold:
-            use_heuristic = True  # Will use heuristic if true at end of loop
+        num_dup_options = sum(1 for vids in file_vertex_map.values() if len(vids) > 1)
+        if num_dup_options > 0:
+            # Estimate average options per duplicate set
+            avg_option_size = sum(len(vids) for vids in file_vertex_map.values() if len(vids) > 1) / max(1, num_dup_options)
+            combo_estimate *= (max(2, int(avg_option_size)) ** num_dup_options)
+            # Track heuristic decision WITHOUT breaking - let complexity calculation complete
+            if combo_estimate >= mega_complexity_threshold:
+                use_heuristic = True  # Will use heuristic if true at end of loop
+            # Cap for exponential safety (avoid inf/overflow) but don't break early
+            if combo_estimate > 1e20:
+                combo_estimate = 1e20
     
     # OPTIMIZATION: If using heuristic, build single heuristic candidate instead of all combinations
     # This saves minutes of candidate cross-multiplication for large components
@@ -5645,7 +5620,7 @@ def main():
     parser.add_argument("--filter-method", type=str, default='simplified-modularity',
                        choices=['simplified-modularity', 'modularity'],
                        help="Method for selecting which duplicate vertices to keep: 'simplified-modularity' (weighted internal/external edges) or 'modularity' (proper modularity calculation)")
-    parser.add_argument("--mega_complexity_threshold", type=float, default=5000,
+    parser.add_argument("--mega_complexity_threshold", type=float, default=10000,
                        help="Complexity threshold for using heuristic approach instead of exhaustive search. For components with combo_estimate > threshold, uses clusterwise modularity optimization (fast, greedy) instead of evaluating all combinations. Set to 0 or negative to disable heuristic. (default: 1e15)")
     parser.add_argument("--output-deleted-vertices", type=str, default=None,
                        help="Output path for deleted vertices JSON report (default: deleted_vertices_TIMESTAMP.json in current directory)")
@@ -5738,14 +5713,12 @@ def main():
         edges_sample = sample_edges_for_testing(edges, sample_fraction)
         print(f"  Sampling {sample_fraction*100:.1f}% of edges ({len(edges_sample)} edges)")
         edges = edges_sample
-        del edges_sample  # Free the temporary sample reference
     elif args.test_mode:
         # Test mode: use 10% default
         sample_fraction = 0.1
         edges_sample = sample_edges_for_testing(edges, sample_fraction)
         print(f"  [TEST MODE] Using {sample_fraction*100:.1f}% of edges ({len(edges_sample)} edges)")
         edges = edges_sample
-        del edges_sample  # Free the temporary sample reference
     
     # Build graph
     cutoff_info = f"edge_cutoff={args.edge_cutoff}" if args.mz_cutoff is None else f"mz_cutoff={args.mz_cutoff}, rt_cutoff={args.rt_cutoff}"
@@ -5774,19 +5747,6 @@ def main():
                                                               bidirectional_map=bidirectional_map,
                                                               ident_lookup=ident_lookup)
     timing_marks['build_graph_end'] = time.time()
-    
-    # ===== MEMORY OPTIMIZATION: Delete large temporary data structures =====
-    # These are no longer needed after graph construction
-    print("[MEMORY] Freeing temporary data structures (bidirectional_map, ident_lookup, edges)...", flush=True)
-    try:
-        del bidirectional_map  # 2-4 GB - was computed for graph building only
-        del ident_lookup       # 2-5 GB - data merged into vertex_attrs, no longer needed
-        del edges             # Variable reassignment from sampling, safe to delete
-        del edges_full        # 5-8 GB - no longer needed after sampling
-        gc.collect()          # Force garbage collection
-        print("[MEMORY] ✓ Freed temporary structures", flush=True)
-    except NameError:
-        pass  # Variables might not exist if not loaded (e.g., no ident_lookup file)
     
     if graph is None:
         return
@@ -5819,11 +5779,11 @@ def main():
     # Perform clustering (if enabled)
     vertex_to_cluster_map = {}
     component_cluster_info = {}
-    optimization_result = {}  # Track optimization results (empty if no optimization)
-    optimization_complete = False  # Track if optimization was completed
+    optimization_result = None  # Track optimization results
     
     # Load unpaired vertices (needed for optimization scoring if available)
     unpaired_vertices = load_unpaired_vertices_json(args.unpaired_json)
+    unpaired_singletons_count = len(unpaired_vertices) if unpaired_vertices else 0
     
     if args.enable_clustering:
         print("\n" + "="*70)
@@ -5832,9 +5792,7 @@ def main():
         timing_marks['clustering_start'] = time.time()
         
         # Initialize clustering data (will be populated if optimization is performed)
-        vertex_to_cluster_map = {}
-        component_cluster_info = {}
-        initial_cluster_distribution_final = {}
+        best_clustering_data = None
         
         # Auto-select resolution if enabled
         if args.auto_select_resolution and args.clustering_method.lower() == 'leiden':
@@ -5844,27 +5802,9 @@ def main():
                 timestamp = time.strftime("%Y%m%d_%H%M%S")
                 iterations_output_path = f"resolution_iterations_{timestamp}.json"
             
-            # ===== PHASE 2: Setup iteration output directory =====
-            # Create directory to store per-iteration clustering results
-            iteration_output_dir = None
-            try:
-                iteration_output_dir = os.path.dirname(iterations_output_path) or '.'
-                iterations_subdir = os.path.join(iteration_output_dir, 'iterations')
-                os.makedirs(iterations_subdir, exist_ok=True)
-                iteration_output_dir = iterations_subdir
-                print(f"\n✓ Iteration output directory: {iteration_output_dir}")
-            except Exception as e:
-                print(f"\n✗ Failed to create iteration output directory: {str(e)}")
-                raise
-            
-            # ===== PHASE 2: Prepare pre-computed analysis for all iterations =====
-            # (Compute analysis once, use same for all iterations since graph doesn't change)
-            pre_computed_analysis = analysis if analysis is not None else None
-            pre_computed_composition = graph_composition if graph_composition is not None else None
-            
             # Run optimization - choose method based on parameter
             if args.resolution_optimization_method.lower() == 'grid-search':
-                optimal_resolution, best_metrics, iteration_history, _, best_iteration_num = grid_search_resolution(
+                optimal_resolution, best_metrics, iteration_history, best_clustering_data = grid_search_resolution(
                     graph,
                     vertex_attrs,
                     method=args.clustering_method.lower(),
@@ -5880,15 +5820,12 @@ def main():
                     lambda_param=args.resolution_lambda,
                     optimization_metric=args.resolution_metric,
                     output_iterations_path=iterations_output_path,
-                    unpaired_vertices=unpaired_vertices,
+                    unpaired_singletons_count=unpaired_singletons_count,
                     initial_seed=args.random_seed if args.random_seed is not None else 42,
-                    mega_complexity_threshold=args.mega_complexity_threshold,
-                    iteration_output_dir=iteration_output_dir,
-                    pre_computed_analysis=pre_computed_analysis,
-                    pre_computed_composition=pre_computed_composition
+                    mega_complexity_threshold=args.mega_complexity_threshold
                 )
             else:  # gradient-descent (default)
-                optimal_resolution, best_metrics, iteration_history, _, best_iteration_num = select_optimal_resolution(
+                optimal_resolution, best_metrics, iteration_history, best_clustering_data = select_optimal_resolution(
                     graph,
                     vertex_attrs,
                     method=args.clustering_method.lower(),
@@ -5904,12 +5841,9 @@ def main():
                     resolution_tolerance=args.resolution_tolerance,
                     optimization_metric=args.resolution_metric,
                     output_iterations_path=iterations_output_path,
-                    unpaired_vertices=unpaired_vertices,
+                    unpaired_singletons_count=unpaired_singletons_count,
                     initial_seed=args.random_seed if args.random_seed is not None else 42,
-                    mega_complexity_threshold=args.mega_complexity_threshold,
-                    iteration_output_dir=iteration_output_dir,
-                    pre_computed_analysis=pre_computed_analysis,
-                    pre_computed_composition=pre_computed_composition
+                    mega_complexity_threshold=args.mega_complexity_threshold
                 )
             
             # Store optimization result for later reporting
@@ -5923,7 +5857,6 @@ def main():
                 'avg_cluster_size': best_metrics['avg_cluster_size'],
                 'vertices_deleted': best_metrics['vertices_deleted'],
                 'num_clusters': best_metrics['num_clusters'],
-                'best_iteration_num': best_iteration_num,
                 'iterations': iteration_history,
                 'iterations_output_path': iterations_output_path
             }
@@ -5931,54 +5864,49 @@ def main():
             # Use optimized resolution for final clustering
             final_resolution = optimal_resolution
             print(f"\n  ✓ Using optimized resolution: {optimal_resolution:.4f}")
-            print(f"  ✓ Best iteration found: iteration_{best_iteration_num}")
             
-            # PHASE 5: Copy clustering results from best iteration (all JSON files already saved in Phase 2)
-            best_iteration_dir = os.path.join(iteration_output_dir, f"iteration_{best_iteration_num}")
-            print(f"  ✓ Copying clustering results from best iteration directory")
-            
-            # Define the 5 JSON files to copy
-            json_files_to_copy = [
-                'clusters_fraction1.0.json',
-                'clusters_filtered.json',
-                'clusters_recovered.json',
-                'deleted_vertices.json',
-                'graph_analysis_fraction1.0.json',
-                'graph_composition_fraction1.0.json'
-            ]
-            
-            # Get output directory (same as where resolution_iterations.json is)
-            output_dir = os.path.dirname(iterations_output_path) or '.'
-            
-            # Copy each file
-            for json_file in json_files_to_copy:
-                src = os.path.join(best_iteration_dir, json_file)
-                dst = os.path.join(output_dir, json_file)
-                try:
-                    if os.path.exists(src):
-                        shutil.copy(src, dst)
-                        print(f"    ✓ Copied {json_file}")
-                    else:
-                        # Optional file (e.g., clusters_recovered.json might not exist in all iterations)
-                        print(f"    ⊘ Skipped {json_file} (not found)")
-                except Exception as e:
-                    print(f"    ✗ ERROR copying {json_file}: {str(e)}")
-                    raise
-            
-            print(f"\n  ✓ Phase 5 complete: All clustering results from best iteration copied to {output_dir}")
-            print(f"    (Original iteration files preserved in {iteration_output_dir} for audit trail)")
-            
-            # Mark that we have completed the optimization - skip the final re-export
-            optimization_complete = True
+            # Use the clustering from the best iteration to avoid re-clustering
+            # (ensures consistency between optimization and final output)
+            if best_clustering_data:
+                vertex_to_cluster_map = best_clustering_data.get('vertex_to_cluster_map', {})
+                component_cluster_info = best_clustering_data.get('component_cluster_info', {})
+                print(f"  ✓ Using clustering from best iteration (deterministic: no re-clustering)")
+                # Calculate initial cluster distribution from the saved clustering
+                initial_cluster_sizes_final = []
+                for comp_id, comp_info in component_cluster_info.items():
+                    for cluster_id, vertex_list in comp_info.get('clusters', {}).items():
+                        initial_cluster_sizes_final.append(len(vertex_list))
+                initial_cluster_distribution_final = create_cluster_size_distribution(initial_cluster_sizes_final) if initial_cluster_sizes_final else {}
+            else:
+                # Fallback: re-cluster if clustering data not available
+                print(f"  ⚠ Warning: Could not retrieve clustering from optimization, re-clustering...")
+                # Compute seed based on final_resolution for determinism
+                resolution_seed = int(final_resolution * 10000) % 10000
+                if resolution_seed == 0:
+                    resolution_seed = 1
+                vertex_to_cluster_map, component_cluster_info = cluster_graph_independent_components(
+                    graph,
+                    vertex_attrs,
+                    method=args.clustering_method.lower(),
+                    use_weights=args.clustering_use_weights,
+                    weight_mode=args.clustering_weight_mode,
+                    resolution_parameter=final_resolution,
+                    objective_function=args.objective_function,
+                    random_seed=resolution_seed
+                )
+                # Calculate initial (pre-filtering) cluster distribution for this final clustering
+                initial_cluster_sizes_final = []
+                for comp_id, comp_info in component_cluster_info.items():
+                    for cluster_id, vertex_list in comp_info.get('clusters', {}).items():
+                        initial_cluster_sizes_final.append(len(vertex_list))
+                initial_cluster_distribution_final = create_cluster_size_distribution(initial_cluster_sizes_final) if initial_cluster_sizes_final else {}
         else:
-            # Non-optimization path: Use provided resolution parameter
             final_resolution = args.resolution_parameter
-            optimization_complete = False  # Not using optimization results
             if args.auto_select_resolution and args.clustering_method.lower() != 'leiden':
                 print("  ⚠ Warning: --auto-select-resolution requires --clustering-method leiden")
                 print(f"  Using provided resolution: {args.resolution_parameter}\n")
             
-            # Perform clustering with provided resolution
+            # Perform final clustering with selected/provided resolution
             # Compute seed based on final_resolution for determinism
             resolution_seed = int(final_resolution * 10000) % 10000
             if resolution_seed == 0:
@@ -6197,7 +6125,7 @@ def main():
     if args.enable_clustering and vertex_to_cluster_map:
         # PHASE 2: Create singleton clusters for unpaired vertices BEFORE export
         # (unpaired_vertices already loaded earlier for optimization scoring)
-        if not optimization_complete:
+        if unpaired_vertices:
             next_vid, next_cid = create_singleton_clusters_for_unpaired(
                 unpaired_vertices,
                 component_cluster_info,
@@ -6209,20 +6137,14 @@ def main():
         
         # NOTE: We do NOT calculate or update final distributions here
         # The iteration data in resolution_iterations.json represents what the optimization algorithm actually computed
-        # Unpaired singletons are ALREADY INCLUDED in the optimization JSON files for metric consistency
-        # This ensures data consistency: iteration_history records the true optimization state with singletons included
+        # Unpaired singletons are added AFTER optimization and should NOT be part of the optimization metrics
+        # This ensures data consistency: iteration_history records the true optimization state, uncontaminated
         
-        if not optimization_complete:
-            print(f"✓ Added {len(unpaired_vertices) if unpaired_vertices else 0} unpaired singletons to cluster structure")
-            print(f"  ✓ resolution_iterations.json remains unchanged (represents pure optimization result)")
-            print(f"  ✓ Output files (clusters.json) include unpaired singletons as separate components")
-        else:
-            print(f"✓ Using pre-computed clustering from best optimization iteration")
-            print(f"  ✓ All clustering results including unpaired singletons already in copied files")
+        print(f"✓ Added {len(unpaired_vertices) if unpaired_vertices else 0} unpaired singletons to cluster structure")
+        print(f"  ✓ resolution_iterations.json remains unchanged (represents pure optimization result)")
+        print(f"  ✓ Output files (clusters.json) include unpaired singletons as separate components")
         
-        # PHASE 5 SIMPLIFIED: Only export if NOT using optimization results
-        # (If optimization was used, files were already exported and copied in Phase 2+5)
-        if not optimization_complete and args.output_clusters_json:
+        if args.output_clusters_json:
             output_clusters = add_cutoff_suffix_to_filename(args.output_clusters_json, args.edge_cutoff, args.mz_cutoff, args.rt_cutoff, args.fraction)
             export_clusters_to_json(vertex_to_cluster_map, component_cluster_info, vertex_attrs, output_clusters)
             

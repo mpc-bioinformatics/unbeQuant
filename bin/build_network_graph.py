@@ -2197,13 +2197,12 @@ def _generate_filter_candidates(comp_idx: int, clusters_with_duplicates: Dict, v
     combo_estimate = 1
     for cluster_id in clusters_with_duplicates:
         file_vertex_map = clusters_with_duplicates[cluster_id]
-        num_dup_options = sum(1 for vids in file_vertex_map.values() if len(vids) > 1)
-        if num_dup_options > 0:
-            # Estimate average options per duplicate set
-            avg_option_size = sum(len(vids) for vids in file_vertex_map.values() if len(vids) > 1) / max(1, num_dup_options)
-            combo_estimate *= (max(2, int(avg_option_size)) ** num_dup_options)
-            if combo_estimate > 10000:  # Bailout early if explosion detected
-                break
+        num_dup_options = [len(vids) for vids in file_vertex_map.values() if len(vids) > 1]
+        for x in num_dup_options:
+            combo_estimate *= x
+
+        if combo_estimate > 10000:  # Bailout early if explosion detected
+            break
     
     # If too many combinations, use single heuristic candidate instead
     if combo_estimate > 10000:
