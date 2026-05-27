@@ -11,8 +11,6 @@ import numpy as np
 import os
 import sys
 import gc
-import tracemalloc
-import psutil
 from pathlib import Path
 from typing import Dict, List, Tuple
 from scipy.spatial import cKDTree
@@ -49,111 +47,6 @@ except ImportError:
     class PiecewisePolynomial:
         """Piecewise polynomial model that can be pickled (fallback)."""
         pass
-
-
-def get_memory_info(label="", print_details=False):
-    """
-    Get comprehensive memory usage info using multiple methods.
-    Returns RSS in MB, but prints all available metrics.
-    """
-    # Start tracemalloc if not already started
-    if not tracemalloc.is_tracing():
-        tracemalloc.start()
-    
-    process = psutil.Process(os.getpid())
-    mem_info = process.memory_info()
-    
-    # Get all memory metrics
-    rss_mb = mem_info.rss / (1024 * 1024)  # Resident Set Size - actual physical memory
-    vms_mb = mem_info.vms / (1024 * 1024)  # Virtual Memory Size - all mapped memory
-    
-    # Get tracemalloc peak (Python object allocations only)
-    current, peak = tracemalloc.get_traced_memory()
-    current_mb = current / (1024 * 1024)
-    peak_mb = peak / (1024 * 1024)
-    
-    if print_details:
-        print(f"[COMPREHENSIVE MEMORY TRACKING] {label}")
-        print(f"  RSS (physical memory in use):       {rss_mb:8.1f} MB")
-        print(f"  VSZ (virtual memory mapped):        {vms_mb:8.1f} MB")
-        print(f"  Tracemalloc current (Python objs):  {current_mb:8.1f} MB")
-        print(f"  Tracemalloc peak (Python objs):     {peak_mb:8.1f} MB")
-        try:
-            percent = process.memory_percent()
-            print(f"  System memory percent:              {percent:8.1f} %")
-        except:
-            pass
-        # Show difference from baseline
-        print()
-    
-    return rss_mb
-
-
-def get_object_size_recursive(obj, seen=None, depth=0, max_depth=3):
-    """
-    Recursively estimate size of a Python object including nested structures.
-    Useful for estimating dictionary/list memory usage.
-    """
-    if seen is None:
-        seen = set()
-    
-    obj_id = id(obj)
-    if obj_id in seen or depth > max_depth:
-        return 0
-    
-    seen.add(obj_id)
-    size = sys.getsizeof(obj)
-    
-    if isinstance(obj, dict):
-        for k, v in obj.items():
-            size += get_object_size_recursive(k, seen, depth + 1, max_depth)
-            size += get_object_size_recursive(v, seen, depth + 1, max_depth)
-    elif isinstance(obj, (list, tuple)):
-        for item in obj:
-            size += get_object_size_recursive(item, seen, depth + 1, max_depth)
-    elif isinstance(obj, np.ndarray):
-        size += obj.nbytes  # Direct array data
-    
-    return size
-
-
-def print_structure_sizes(label, structures_dict):
-    """Print estimated memory sizes of key data structures."""
-    print(f"\n[STRUCTURE SIZES] {label}")
-    total_size = 0
-    for name, obj in structures_dict.items():
-        if obj is None:
-            print(f"  {name:30s}: Not allocated")
-            continue
-        try:
-            if isinstance(obj, dict):
-                # For dictionaries, estimate based on size of content
-                if isinstance(obj, dict) and len(obj) > 0:
-                    size = get_object_size_recursive(obj)
-                    size_mb = size / (1024 * 1024)
-                    print(f"  {name:30s}: {size_mb:8.1f} MB ({len(obj)} entries)")
-                    total_size += size
-                else:
-                    print(f"  {name:30s}: <1 MB (empty)")
-            elif isinstance(obj, list):
-                size = get_object_size_recursive(obj)
-                size_mb = size / (1024 * 1024)
-                print(f"  {name:30s}: {size_mb:8.1f} MB ({len(obj)} entries)")
-                total_size += size
-            elif isinstance(obj, np.ndarray):
-                size_mb = obj.nbytes / (1024 * 1024)
-                print(f"  {name:30s}: {size_mb:8.1f} MB (shape {obj.shape})")
-                total_size += obj.nbytes
-            else:
-                size = sys.getsizeof(obj)
-                size_mb = size / (1024 * 1024)
-                print(f"  {name:30s}: {size_mb:8.1f} MB")
-                total_size += size
-        except Exception as e:
-            print(f"  {name:30s}: Error measuring - {e}")
-    
-    print(f"  {'TOTAL ESTIMATED':30s}: {total_size / (1024 * 1024):8.1f} MB")
-    print()
 
 
 def build_trafoxmls_fid_dict(trafoxmls_dir: str) -> Dict[str, float]:
@@ -782,7 +675,6 @@ def _build_connected_components_from_edges(edges: Dict, file_features_list: List
     from collections import defaultdict
     
     print("[DEBUG_CC] Entering _build_connected_components_from_edges...")
-    mem_cc_start = get_memory_info("CC START", print_details=True)
     
     # Union-Find for fast grouping
     parent = {}
@@ -834,8 +726,6 @@ def _build_connected_components_from_edges(edges: Dict, file_features_list: List
             neighbors[v2][v1] = distance
     
     print(f"[DEBUG_CC] Edge processing complete. all_vertices: {len(all_vertices)}, neighbors entries: {len(neighbors)}")
-    mem_after_edge_proc = get_memory_info("CC AFTER EDGE PROCESSING", print_details=True)
-    print(f"[DEBUG_CC] Memory delta after edge processing: {mem_after_edge_proc - mem_cc_start:.1f} MB")
     
     # Group vertices by their root (component)
     print("[DEBUG_CC] Grouping vertices by component...")
@@ -846,19 +736,15 @@ def _build_connected_components_from_edges(edges: Dict, file_features_list: List
 
     components = list(components.values())
     print(f"[DEBUG_CC] Component grouping complete. Total components: {len(components)}")
-    mem_after_grouping = get_memory_info("CC AFTER GROUPING", print_details=True)
-    print(f"[DEBUG_CC] Memory delta after grouping: {mem_after_grouping - mem_after_edge_proc:.1f} MB")
     
     # Build consolidated match entries for each component
     matches = []
     total_components = len(components)
     print("[DEBUG_CC] Starting component consolidation...")
-    mem_before_consolidation = get_memory_info("CC BEFORE CONSOLIDATION", print_details=True)
     
     for comp_idx, component_vertices in enumerate(components):
         if comp_idx % max(1, total_components // 10) == 0:
             if comp_idx > 0:
-                mem_now = get_memory_info(f"CC CONSOLIDATION {comp_idx}/{total_components}", print_details=False)
                 print(f"    Processing component {comp_idx+1}/{total_components} (mem: {mem_now:.1f} MB)", end='\r', flush=True)
             else:
                 print(f"    Processing component {comp_idx+1}/{total_components}", end='\r', flush=True)
@@ -938,7 +824,6 @@ def _build_connected_components_from_edges(edges: Dict, file_features_list: List
         matches.append(match)
     
     print(f"\n  ✓ Built {len(matches)} connected component groups")
-    mem_cc_end = get_memory_info("CC END", print_details=True)
     print(f"[DEBUG_CC] Total memory delta in CC function: {mem_cc_end - mem_cc_start:.1f} MB")
     return matches
 
@@ -1298,7 +1183,6 @@ def feature_pairing_optimized(all_feature_data_lists: List[List[Dict]], best_mat
     # Build KD-trees for each charge group in each file
     # Structure: {file_idx: {charge: {'kdtree': cKDTree, 'features': [features], 'coords': np.array}}}
     print("\n[PROGRESS] Step 3: Building KD-trees for each file/charge combination...")
-    get_memory_info("BEFORE KD-TREE BUILDING", print_details=True)
     
     kdtrees_by_charge = []
     
@@ -1321,7 +1205,6 @@ def feature_pairing_optimized(all_feature_data_lists: List[List[Dict]], best_mat
         kdtrees_by_charge.append(file_kdtrees)
     
     print(f"  ✓ KD-trees built successfully")
-    get_memory_info("AFTER KD-TREE BUILDING", print_details=True)
     
     # Pre-compute corrected KD-trees for all file pairs (if RT corrections enabled)
     # Note: Pre-kdtree computation is skipped for JSON-based corrections
@@ -1357,7 +1240,6 @@ def feature_pairing_optimized(all_feature_data_lists: List[List[Dict]], best_mat
     edges = {}
     
     print("\n[PROGRESS] Step 4: Performing pairwise feature matching...")
-    get_memory_info("BEFORE PAIRWISE MATCHING", print_details=True)
     num_files = len(all_feature_data_lists)
     total_pairwise_comparisons = 0
     processed_pairwise_comparisons = 0
@@ -1494,19 +1376,10 @@ def feature_pairing_optimized(all_feature_data_lists: List[List[Dict]], best_mat
         # This prevents edges[0], edges[1], ... edges[N] from all accumulating simultaneously
         # Reduces memory bloat as the loop processes multiple files sequentially
         print(f"    File {file_file_idx} complete: {len(edges[file_file_idx])} edges. Collecting garbage...")
-        gc.collect()
                             
     
     # Diagnostic output: verify all edges have matching charges
     print("\n  Verifying charge consistency in edges:")
-    get_memory_info("AFTER PAIRWISE MATCHING (before consolidation)", print_details=True)
-    
-    # Print structure sizes before consolidation
-    print_structure_sizes("STRUCTURE SIZES AFTER MATCHING", {
-        'edges (total)': edges,
-        'file_features_by_charge': file_features_by_charge,
-        'all_feature_data_lists': all_feature_data_lists
-    })
     
     edges_by_charge = {}
     total_edges_verified = 0
@@ -1528,16 +1401,12 @@ def feature_pairing_optimized(all_feature_data_lists: List[List[Dict]], best_mat
         
         # [AGGRESSIVE CLEANUP] Free large intermediate data structures before returning
         print("  ✓ Performing aggressive memory cleanup...")
-        mem_before_cleanup = get_memory_info("BEFORE CLEANUP", print_details=True)
         
         # Delete large data structures that are no longer needed
         del file_features_by_charge
         del kdtrees_by_charge
         del scale_coords
         gc.collect()
-        
-        mem_after_cleanup = get_memory_info("AFTER CLEANUP", print_details=True)
-        print(f"    Memory freed: {mem_before_cleanup - mem_after_cleanup:.1f} MB")
         
         return matches, edges, file_index_map
     
@@ -1729,10 +1598,6 @@ def main():
     
     
     # [DIAGNOSTIC] Print memory state after loading all features
-    get_memory_info("AFTER LOADING ALL FEATURES", print_details=True)
-    print_structure_sizes("INITIAL STRUCTURE SIZES", {
-        'all_feature_data_lists': all_feature_data_lists
-    })
     
     # [DELETION POINT #1] feature_files no longer used after this point
     # Save the count before deleting since it's needed in output_data
@@ -1816,7 +1681,6 @@ def main():
             
             # [DELETION POINT #2] fid_to_rt_dict no longer used after this point
             del fid_to_rt_dict
-            gc.collect()
             
             # Set rt_correction_mode to 'none' since corrections already applied via transformations
             args.rt_correction_mode = 'none'
@@ -1837,11 +1701,6 @@ def main():
     paired_features, network_edges, file_index_map = feature_pairing_optimized(all_feature_data_lists, best_match_only=True, skip_match_building=True, normalize_coordinates=normalize_coordinates, distance_calc_before_scaling=args.distance_calc_before_scaling, rt_correction_json=args.rt_correction_json, rt_correction_mode=args.rt_correction_mode, rt_source=args.rt_source, mz_rt_weight_ratio=args.mz_rt_weight_ratio, mz_cutoff=args.mz_cutoff, rt_cutoff=args.rt_cutoff, edges_cutoff=args.edges_cutoff)
     
     # [DIAGNOSTIC] Print memory state after pairing completes
-    get_memory_info("AFTER FEATURE PAIRING", print_details=True)
-    print_structure_sizes("STRUCTURE SIZES AFTER PAIRING", {
-        'network_edges': network_edges,
-        'all_feature_data_lists': all_feature_data_lists
-    })
     
     print(f"Built network graph with {sum(len(e) for e in network_edges.values())} edges")
     print(f"  File index mapping: {file_index_map}")
@@ -1923,19 +1782,13 @@ def main():
     del all_feature_data_lists
     del unpaired_vertices
     gc.collect()
-    print("  ✓ Feature data freed (~500MB)")
+
     
     # [DIAGNOSTIC] Print memory state after clearing features
-    get_memory_info("AFTER CLEARING FEATURES", print_details=True)
-    print_structure_sizes("STRUCTURE SIZES AFTER FEATURE CLEANUP", {
-        'network_edges': network_edges,
-        'ident_lookup': ident_lookup
-    })
 
     # Save results with edges and ident_lookup only (no paired_features)
     # Save results with edges and ident_lookup only (no paired_features)
     print("[DEBUG] Creating output_data dictionary...")
-    mem_before_output_create = get_memory_info("BEFORE OUTPUT CREATION", print_details=True)
     
     output_data = {
         'network_edges': network_edges,  # Include network graph structure
@@ -1960,45 +1813,38 @@ def main():
         }
     }
     
-    mem_after_output_create = get_memory_info("AFTER OUTPUT CREATION", print_details=True)
-    print(f"[DEBUG] Memory delta for output_data creation: {mem_after_output_create - mem_before_output_create:.1f} MB")
-    
     # OPTIMIZED: Save pickle (fast binary format) - NO paired_features, only edges and ident_lookup
     print("[DEBUG] Starting pickle save...")
-    mem_before_pickle = get_memory_info("BEFORE PICKLE SAVE", print_details=True)
     print("Saving output (pickle) - edges and ident_lookup only...")
     with open(args.output_pkl, 'wb') as f:
         pickle.dump(output_data, f)
-    mem_after_pickle = get_memory_info("AFTER PICKLE SAVE", print_details=True)
-    print(f"[DEBUG] Memory delta for pickle save: {mem_after_pickle - mem_before_pickle:.1f} MB")
     print(f"✓ Saved edges and ident_lookup (pickle): {os.path.basename(args.output_pkl)}")
     
     # OPTIMIZED: Skip JSON by default (optional) - JSON serialization of 45K+ features is slow
     if not args.skip_json_output:
         print("[DEBUG] Starting JSON save...")
-        mem_before_json = get_memory_info("BEFORE JSON SAVE", print_details=True)
         print("Saving output (JSON)...  (this may take a while, use --skip_json_output to skip)")
         with open(args.output_json, 'w') as f:
-            json.dump(output_data, f, indent=2)
-        mem_after_json = get_memory_info("AFTER JSON SAVE", print_details=True)
-        print(f"[DEBUG] Memory delta for JSON save: {mem_after_json - mem_before_json:.1f} MB")
+            json.dump(output_data, f)
         print(f"✓ Saved edges and ident_lookup (JSON): {os.path.basename(args.output_json)}")
     else:
         print(f"⊘ Skipped JSON output (--skip_json_output enabled)")
     
     # Save combined ident lookup (pep_ident + prot_ident) separately for fast loading in build_network_graph.py
     print("[DEBUG] Starting ident_lookup save...")
-    mem_before_ident = get_memory_info("BEFORE IDENT_LOOKUP SAVE", print_details=True)
     ident_lookup_path = args.output_json.replace('.json', '_ident_lookup.json')
     with open(ident_lookup_path, 'w') as f:
-        json.dump(ident_lookup, f, indent=2)
-    mem_after_ident = get_memory_info("AFTER IDENT_LOOKUP SAVE", print_details=True)
-    print(f"[DEBUG] Memory delta for ident_lookup save: {mem_after_ident - mem_before_ident:.1f} MB")
+        json.dump(ident_lookup, f)
     print(f"✓ Saved combined ident lookup: {os.path.basename(ident_lookup_path)}")
     
+    # [MEMORY OPTIMIZATION] Delete output_data and ident_lookup before edges JSON conversion
+    # Both have been fully saved (pickle and JSON), and are not needed for edges JSON
+    # This frees ~4GB (output_data holds refs to network_edges + ident_lookup) before the spike
+    del output_data
+    del ident_lookup
+    gc.collect()
     # Save edges dictionary separately for direct use with build_network_graph.py
     print("[DEBUG] Starting edges save...")
-    mem_before_edges = get_memory_info("BEFORE EDGES SAVE", print_details=True)
     edges_output_path = args.output_edges_pkl
     if not edges_output_path:
         # Infer from output_pkl: replace 'paired_features' with 'edges' or add '_edges' suffix
@@ -2009,8 +1855,6 @@ def main():
     
     with open(edges_output_path, 'wb') as f:
         pickle.dump(network_edges, f)
-    mem_after_edges_pkl = get_memory_info("AFTER EDGES PKL SAVE", print_details=True)
-    print(f"[DEBUG] Memory delta for edges pkl save: {mem_after_edges_pkl - mem_before_edges:.1f} MB")
     print(f"✓ Saved edges dictionary (pickle): {os.path.basename(edges_output_path)}")
     print(f"  Optionally use with: python build_network_graph.py --input_pkl {os.path.basename(edges_output_path)}")
     
@@ -2032,6 +1876,12 @@ def main():
                 # Convert tuple keys to strings for JSON serialization
                 str_key = str(edge_key)
                 edges_for_json[str_key] = edge_data
+            
+            # [MEMORY OPTIMIZATION] Delete network_edges immediately after shallow copy is created
+            # edges_for_json contains references to the same edge list objects, so network_edges is redundant
+            # Freeing this ~3.3GB dict before modification loop reduces memory spike by ~50%
+            del network_edges
+            gc.collect()
             
             # Replace file indices with filenames FOR JSON OUTPUT ONLY
             # (keeping in-memory dict small with indices)
@@ -2062,20 +1912,14 @@ def main():
                     edges_converted += 1
             
             print(f"[DEBUG] Converted {edges_converted} edge records with filenames")
-            
-            mem_before_edges_json = get_memory_info("BEFORE EDGES JSON SAVE", print_details=True)
             with open(edges_json_path, 'w') as f:
                 json.dump(edges_for_json, f, indent=2)
-            mem_after_edges_json = get_memory_info("AFTER EDGES JSON SAVE", print_details=True)
-            print(f"[DEBUG] Memory delta for edges JSON save: {mem_after_edges_json - mem_before_edges_json:.1f} MB")
             print(f"✓ Saved edges dictionary (JSON): {os.path.basename(edges_json_path)}")
             
             # [AGGRESSIVE CLEANUP] Delete the duplicate edges_for_json immediately after saving
             print("  Cleaning up temporary edges_for_json copy...")
             del edges_for_json
             gc.collect()
-            mem_after_cleanup = get_memory_info("AFTER EDGES_FOR_JSON CLEANUP", print_details=False)
-            print(f"    Memory freed: {mem_after_edges_json - mem_after_cleanup:.1f} MB")
         except Exception as e:
             print(f"⊘ Failed to save edges JSON: {e}")
     else:
@@ -2083,10 +1927,8 @@ def main():
     
     # [DELETION POINT #7] Final cleanup after all output operations complete
     print("Final memory cleanup...")
-    del output_data
-    del network_edges
-    del ident_lookup
-    gc.collect()
+    # output_data and ident_lookup already deleted earlier (after being fully saved)
+    # to reduce memory spike during edges JSON conversion
     print("  ✓ Output data structures freed")
     
     # Save metadata JSON (pairing parameters, cutoff info, feature counts)

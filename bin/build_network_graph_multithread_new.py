@@ -89,9 +89,67 @@ def load_edges_from_paired_features(paired_features_file: str) -> List[Dict]:
     return edges
 
 
+def load_edges_and_cutoff_params_from_paired_features(paired_features_file: str) -> Tuple[List[Dict], Dict]:
+    """
+    Load BOTH edges and cutoff parameters in a SINGLE file read operation.
+    This avoids loading the pickle file twice and reduces peak memory usage.
+    
+    Args:
+        paired_features_file: Path to pickle or JSON file
+    
+    Returns:
+        Tuple of (edges_list, cutoff_params_dict)
+        - edges_list: List of edge dictionaries
+        - cutoff_params_dict: Dict with keys mz_cutoff, rt_cutoff, edges_cutoff (or empty if not found)
+    """
+    # Load file once
+    if paired_features_file.endswith('.pkl'):
+        with open(paired_features_file, 'rb') as f:
+            data = pickle.load(f)
+    elif paired_features_file.endswith('.json'):
+        with open(paired_features_file, 'r') as f:
+            data = json.load(f)
+    else:
+        raise ValueError("File must be .pkl or .json")
+    
+    # Extract edges
+    edges = []
+    if isinstance(data, dict):
+        # Check if it's the new wrapped edges format {network_edges: {file_idx: [edges]}, cutoff_params: {...}}
+        if 'network_edges' in data and 'cutoff_params' in data:
+            # Wrapped format with cutoff parameters from --skip-matchfinder output
+            network_edges = data['network_edges']
+            if all(isinstance(v, list) for v in network_edges.values()):
+                # Dictionary format: flatten all edges (keys can be int or str)
+                for file_idx, file_edges in network_edges.items():
+                    edges.extend(file_edges)
+            else:
+                edges = network_edges
+        # Check if it's the edges dictionary format {file_idx: [edges]} (int or str keys)
+        elif all(isinstance(v, list) for v in data.values()):
+            # Dictionary format: flatten all edges (keys can be int or str)
+            for file_idx, file_edges in data.items():
+                edges.extend(file_edges)
+        else:
+            # Paired features format with metadata: data['network_edges']
+            edges = data.get('network_edges', [])
+    elif isinstance(data, list):
+        # If it's a list itself
+        edges = data
+    
+    # Extract cutoff parameters
+    cutoff_params = {}
+    if isinstance(data, dict) and 'cutoff_params' in data:
+        cutoff_params = data['cutoff_params']
+    
+    return edges, cutoff_params
+
+
 def load_cutoff_params_from_paired_features(pkl_path: str) -> Dict:
     """Load cutoff parameters from paired features pickle file.
     Returns dict with keys: mz_cutoff, rt_cutoff, edges_cutoff (or empty dict if not found).
+    
+    DEPRECATED: Use load_edges_and_cutoff_params_from_paired_features() instead to avoid double-loading.
     """
     try:
         if pkl_path.endswith('.pkl'):
@@ -2099,92 +2157,6 @@ def export_clusters_to_json(vertex_to_cluster_map: Dict, component_cluster_info:
     print(f"  Summary: {len(clusters_output)} components, {total_clusters} total clusters, {total_vertices} vertices")
 
 
-
-def _clusterwise_modularity_heuristic(comp_idx: int, clusters_with_duplicates: Dict, 
-                                       comp_clusters: Dict, comp_vertices: List,
-                                       vertex_attrs: Dict, vertex_to_cluster_map: Dict,
-                                       graph_edges: List) -> tuple:
-    """
-    Clusterwise modularity optimization heuristic for mega-components.
-    
-    For each cluster, keeps only ONE vertex per file (the one with highest modularity score).
-    Score = internal_degree - external_degree
-      - internal_degree: edges to vertices in same cluster
-      - external_degree: edges to vertices in different clusters (same component)
-    
-    Returns:
-        (vertices_to_keep: frozenset, deleted_vertices_list: list)
-    """
-    print(f"[COMP {comp_idx}] ⚠  USING HEURISTIC (complexity too high for exhaustive search)", flush=True)
-    
-    # Build neighbor map for degree calculations
-    neighbor_map = {}
-    for src, tgt in graph_edges:
-        if src not in neighbor_map:
-            neighbor_map[src] = []
-        if tgt not in neighbor_map:
-            neighbor_map[tgt] = []
-        neighbor_map[src].append(tgt)
-        neighbor_map[tgt].append(src)
-    
-    vertices_to_keep = set(comp_vertices)  # Start with all, then remove selected ones
-    deleted_vertices_list = []
-    
-    # For each cluster with duplicates
-    for cluster_id, file_vertex_map in clusters_with_duplicates.items():
-        # file_vertex_map: {filename: [vertex_ids]}
-        
-        for filename, vertex_ids in file_vertex_map.items():
-            if len(vertex_ids) <= 1:
-                continue  # No duplicates in this file within this cluster
-            
-            # Score each vertex in this file group
-            scores = {}
-            for vertex_id in vertex_ids:
-                internal_degree = 0
-                external_degree = 0
-                
-                for neighbor in neighbor_map.get(vertex_id, []):
-                    neighbor_cluster = vertex_to_cluster_map[neighbor][1]
-                    if neighbor_cluster == cluster_id:
-                        internal_degree += 1
-                    else:
-                        external_degree += 1
-                
-                score = internal_degree - external_degree
-                scores[vertex_id] = score
-            
-            # Keep only the highest-scoring vertex for this file in this cluster
-            best_vertex = max(vertex_ids, key=lambda v: scores[v])
-            
-            # Remove all others from vertices_to_keep
-            for vertex_id in vertex_ids:
-                if vertex_id != best_vertex:
-                    vertices_to_keep.discard(vertex_id)
-                    comp_id, clust_id = vertex_to_cluster_map[vertex_id]
-                    deleted_vertices_list.append({
-                        'component_id': comp_id,
-                        'cluster_id': clust_id,
-                        'vertex_id': vertex_id,
-                        'filename': vertex_attrs[vertex_id]['filename'],
-                        'feature_idx': vertex_attrs[vertex_id]['feature_idx'],
-                        'label': vertex_attrs[vertex_id]['label'],
-                        'pep_ident': vertex_attrs[vertex_id].get('pep_ident', []),
-                        'prot_ident': vertex_attrs[vertex_id].get('prot_ident', []),
-                        'x_center': vertex_attrs[vertex_id].get('x_center', 0.0),
-                        'y_center': vertex_attrs[vertex_id].get('y_center', 0.0),
-                        'intensity': vertex_attrs[vertex_id].get('intensity', 0.0),
-                        'openms_fid': vertex_attrs[vertex_id].get('openms_fid', ''),
-                        'ms2_scans': vertex_attrs[vertex_id].get('ms2_scans', ''),
-                        'charge': vertex_attrs[vertex_id].get('charge', 0),
-                        'reason': 'Duplicate file vertex - filtered via clusterwise heuristic',
-                        'heuristic_score': float(scores[vertex_id])
-                    })
-    
-    print(f"[COMP {comp_idx}] Heuristic deleted {len(deleted_vertices_list)} duplicates, keeping {len(vertices_to_keep)} vertices", flush=True)
-    return frozenset(vertices_to_keep), deleted_vertices_list
-
-
 def _filter_component_worker(component_data: Dict) -> Dict:
     """
     Worker function to filter a single component independently.
@@ -2199,8 +2171,8 @@ def _filter_component_worker(component_data: Dict) -> Dict:
             - vertex_to_cluster_map: Mapping (subset for this component)
             - info: Component info dict
             - filter_method: Filtering method
-            - graph_edges: List of edges in this component's subgraph
             - mega_complexity_threshold: Threshold for using heuristic
+            NOTE: graph is accessed via global (inherited from parent process)
     
     Returns:
         Dictionary with results for this component
@@ -2232,7 +2204,6 @@ def _filter_component_worker(component_data: Dict) -> Dict:
         vertex_to_cluster_map = component_data['vertex_to_cluster_map']
         info = component_data['info']
         filter_method = component_data['filter_method']
-        graph_edges = component_data['graph_edges']
         mega_complexity_threshold = component_data.get('mega_complexity_threshold', 10000)
         
         # Skip components with single vertices
@@ -2296,17 +2267,9 @@ def _filter_component_worker(component_data: Dict) -> Dict:
         # Generate candidates (returns list of all candidates + complexity_estimate + use_heuristic flag)
         candidates, combo_estimate, use_heuristic_flag = _generate_filter_candidates(comp_idx, clusters_with_duplicates, vertex_attrs, all_non_duplicate_vertices, graph, component_cluster_info_for_heuristic, mega_complexity_threshold)
         
-        # Reconstruct graph edges for this component for degree calculations
-        # graph_edges is list of (src, tgt) tuples for edges in this component's subgraph
-        neighbor_map = {}  # vertex_id -> list of neighbors in this component
-        
-        for src, tgt in graph_edges:
-            if src not in neighbor_map:
-                neighbor_map[src] = []
-            if tgt not in neighbor_map:
-                neighbor_map[tgt] = []
-            neighbor_map[src].append(tgt)
-            neighbor_map[tgt].append(src)  # Undirected
+        # Using graph.neighbors() directly for neighbor lookups
+        # graph is available via global inherited from parent
+        comp_vertex_set = set(comp_vertices)
         
         # Decision was made during _generate_filter_candidates based on complexity >= mega_complexity_threshold
         # If heuristic was used, candidates[0] contains the heuristic-selected vertices
@@ -2328,7 +2291,7 @@ def _filter_component_worker(component_data: Dict) -> Dict:
             deleted_vertices_list = []
             
             # Track which scoring paths are used
-            scoring_path_counts = {'induced_subgraph': 0, 'fallback_from_exception': 0, 'neighbor_map_no_graph': 0, 
+            scoring_path_counts = {'induced_subgraph': 0, 'fallback_from_exception': 0, 'degree_fallback_no_graph': 0, 
                                    'modularity': 0, 'modularity_fallback': 0, 'modularity_no_graph_fallback': 0}
             
             # DEBUG: Check cluster count
@@ -2348,8 +2311,12 @@ def _filter_component_worker(component_data: Dict) -> Dict:
                 
                 # Score this ONE candidate
                 if len(clusters_with_duplicates) == 1:
-                    # Single cluster: score by total degree
-                    total_degree = sum(len(neighbor_map.get(v, [])) for v in test_vertices)
+                    # Single cluster: score by total degree using graph
+                    if graph is not None:
+                        total_degree = sum(graph.degree(v) for v in test_vertices)
+                    else:
+                        # Fallback: use candidate size as proxy
+                        total_degree = len(test_vertices)
                     score = total_degree
                 else:
                     # Multiple clusters: use weighted degree or modularity depending on filter_method
@@ -2374,33 +2341,13 @@ def _filter_component_worker(component_data: Dict) -> Dict:
                                                     weighted_score -= 1  # External edge
                                 score = weighted_score
                             except Exception as e:
-                                # Fallback if induced_subgraph fails - use neighbor_map approach
-                                scoring_path = f'fallback_from_exception: {type(e).__name__}'
-                                weighted_score = 0
-                                for v in test_vertices:
-                                    v_cluster = vertex_to_cluster_map[v][1]
-                                    for neighbor in neighbor_map.get(v, []):
-                                        if neighbor in candidate:
-                                            neighbor_cluster = vertex_to_cluster_map[neighbor][1]
-                                            if neighbor_cluster == v_cluster:
-                                                weighted_score += 1
-                                            else:
-                                                weighted_score -= 1
-                                score = weighted_score
+                                # Fallback if induced_subgraph fails: use simple degree
+                                scoring_path = f'degree_fallback: {type(e).__name__}'
+                                score = len(test_vertices)  # Simple fallback: candidate size
                         else:
-                            # No graph available, use neighbor_map
-                            scoring_path = 'neighbor_map_no_graph'
-                            weighted_score = 0
-                            for v in test_vertices:
-                                v_cluster = vertex_to_cluster_map[v][1]
-                                for neighbor in neighbor_map.get(v, []):
-                                    if neighbor in candidate:
-                                        neighbor_cluster = vertex_to_cluster_map[neighbor][1]
-                                        if neighbor_cluster == v_cluster:
-                                            weighted_score += 1
-                                        else:
-                                            weighted_score -= 1
-                            score = weighted_score
+                            # Graph should always be available; use simple degree fallback
+                            scoring_path = 'degree_fallback_no_graph'
+                            score = len(test_vertices)  # Simple fallback: candidate size
                         
                         # Track which scoring path was used
                         if scoring_path in scoring_path_counts:
@@ -2428,40 +2375,23 @@ def _filter_component_worker(component_data: Dict) -> Dict:
                                 
                                 score = test_subgraph.modularity(membership)
                             except Exception as e:
-                                # Fallback to weighted degree if modularity fails
-                                scoring_path = f'modularity_fallback: {type(e).__name__}'
-                                weighted_score = 0
-                                for v in test_vertices:
-                                    v_cluster = vertex_to_cluster_map[v][1]
-                                    for neighbor in neighbor_map.get(v, []):
-                                        if neighbor in candidate:
-                                            neighbor_cluster = vertex_to_cluster_map[neighbor][1]
-                                            if neighbor_cluster == v_cluster:
-                                                weighted_score += 1
-                                            else:
-                                                weighted_score -= 1
-                                score = weighted_score
+                                # Fallback to simple degree if modularity fails
+                                scoring_path = f'modularity_degree_fallback: {type(e).__name__}'
+                                score = len(test_vertices)  # Simple fallback: candidate size
                         else:
-                            # No graph available, use neighbor_map
-                            scoring_path = 'modularity_no_graph_fallback'
-                            weighted_score = 0
-                            for v in test_vertices:
-                                v_cluster = vertex_to_cluster_map[v][1]
-                                for neighbor in neighbor_map.get(v, []):
-                                    if neighbor in candidate:
-                                        neighbor_cluster = vertex_to_cluster_map[neighbor][1]
-                                        if neighbor_cluster == v_cluster:
-                                            weighted_score += 1
-                                        else:
-                                            weighted_score -= 1
-                            score = weighted_score
+                            # Graph should always be available; use simple degree fallback
+                            scoring_path = 'modularity_graph_neighbors_fallback'
+                            score = len(test_vertices)  # Simple fallback: candidate size
                         
                         # Track which scoring path was used
                         if scoring_path in scoring_path_counts:
                             scoring_path_counts[scoring_path] += 1
                     else:
                         # Fallback to degree for unknown filter methods
-                        score = sum(len(neighbor_map.get(v, [])) for v in test_vertices)
+                        if graph is not None:
+                            score = sum(graph.degree(v) for v in test_vertices)
+                        else:
+                            score = len(test_vertices)
                 
                 # Update best if this is better
                 if best_modularity is None or score > best_modularity:
@@ -2632,13 +2562,8 @@ def _lazy_worker_with_self_batching(metadata_stream):
         info = metadata['info']
         comp_clusters = info['clusters']
         
-        # Extract edges using pre-built edge index
-        component_vertex_set = set(comp_vertices)
-        component_edges = []
-        for vertex_id in comp_vertices:
-            for neighbor in edge_index.get(vertex_id, []):
-                if neighbor > vertex_id and neighbor in component_vertex_set:
-                    component_edges.append((vertex_id, neighbor))
+        # Removed: component_edges building
+        # Using graph.neighbors() directly in worker functions
         
         # Create component-scoped copies
         comp_vertex_attrs = {v: vertex_attrs[v] for v in comp_vertices}
@@ -2649,21 +2574,18 @@ def _lazy_worker_with_self_batching(metadata_stream):
         #   - comp_vertices list: ~8 bytes per vertex
         #   - comp_clusters dict: ~50 bytes per entry
         #   - comp_vertex_attrs dict: ~100 bytes per entry
-        #   - component_edges list: ~16 bytes per edge
         comp_vertex_count = len(comp_vertices)
         comp_cluster_count = len(comp_clusters)
-        comp_edge_count = len(component_edges)
         estimated_item_size_bytes = (
             comp_vertex_count * 8 +
             comp_cluster_count * 50 +
-            comp_vertex_count * 100 +
-            comp_edge_count * 16
+            comp_vertex_count * 100
         )
         
         # Log large components
         if estimated_item_size_bytes > 50_000_000:  # >50MB
             print(f"[PID {worker_pid}] ⚠ LARGE COMPONENT DETECTED: comp_idx={comp_idx}, "
-                  f"vertices={comp_vertex_count}, clusters={comp_cluster_count}, edges={comp_edge_count}, "
+                  f"vertices={comp_vertex_count}, clusters={comp_cluster_count}, "
                   f"est_size={estimated_item_size_bytes / 1_000_000:.1f}MB", flush=True)
         
         return {
@@ -2674,7 +2596,6 @@ def _lazy_worker_with_self_batching(metadata_stream):
             'vertex_to_cluster_map': comp_vertex_to_cluster_map,
             'info': info,
             'filter_method': filter_method,
-            'graph_edges': component_edges,
             'combo_estimate': combo_est,
             'mega_complexity_threshold': metadata.get('mega_complexity_threshold', 10000),
             'will_use_heuristic': metadata.get('will_use_heuristic', False),
@@ -2824,65 +2745,7 @@ def _lazy_worker_with_self_batching(metadata_stream):
     return results
 
 
-def _evaluate_candidates_batch(candidates_batch, comp_idx, batch_num, comp_vertices, 
-                               neighbor_map, clusters_with_duplicates, filter_method, 
-                               vertex_to_cluster_map):
-    """
-    Evaluate a batch of candidates and return the best one in this batch.
-    
-    Args:
-        candidates_batch: List of candidate sets to evaluate
-        comp_idx: Component index (for logging)
-        batch_num: Batch number (for logging)
-        comp_vertices: All vertices in component
-        neighbor_map: vertex_id -> list of neighbors
-        clusters_with_duplicates: {cluster_id: {filename: [vertex_ids]}}
-        filter_method: Filtering method name
-        vertex_to_cluster_map: {vertex_id: (comp_idx, cluster_id)}
-    
-    Returns:
-        Tuple of (best_candidate, best_score) for this batch
-    """
-    batch_best_candidate = None
-    batch_best_score = None
-    
-    for idx, candidate in enumerate(candidates_batch):
-        test_vertices = [v for v in comp_vertices if v in candidate]
-        if len(test_vertices) <= 1:
-            continue
-        
-        # Score this candidate
-        if len(clusters_with_duplicates) == 1:
-            # Single cluster: score by total degree
-            total_degree = sum(len(neighbor_map.get(v, [])) for v in test_vertices)
-            score = total_degree
-        else:
-            # Multiple clusters: use weighted degree
-            if filter_method == 'simplified-modularity':
-                weighted_score = 0
-                for v in test_vertices:
-                    v_cluster = vertex_to_cluster_map[v][1]
-                    for neighbor in neighbor_map.get(v, []):
-                        if neighbor in candidate:
-                            neighbor_cluster = vertex_to_cluster_map[neighbor][1]
-                            if neighbor_cluster == v_cluster:
-                                weighted_score += 1  # Internal edge weight - match linear version (was 2)
-                            else:
-                                weighted_score -= 1  # External edge weight
-                score = weighted_score
-            else:
-                # Fallback to degree
-                score = sum(len(neighbor_map.get(v, [])) for v in test_vertices)
-        
-        # Track batch best
-        if batch_best_score is None or score > batch_best_score:
-            batch_best_score = score
-            batch_best_candidate = candidate
-    
-    if batch_best_candidate is not None:
-        print(f"[COMP {comp_idx}] Batch {batch_num}: best score = {batch_best_score}", flush=True)
-    
-    return (batch_best_candidate, batch_best_score)
+# REMOVED: _evaluate_candidates_batch - dead code (never called, replaced by streaming evaluation in _filter_component_worker)
 
 
 
@@ -2914,8 +2777,8 @@ def _evaluate_candidates_batch(candidates_batch, comp_idx, batch_num, comp_verti
 # BATCH CONFIGURATION FOR ORCHESTRATOR-LEVEL COMPONENT BATCHING
 # Components are grouped into batches where sum(complexity) <= limit
 # This ensures bounded RAM usage across all workers processing work simultaneously
-# 100,000 combinations per batch = ~500MB-2GB per worker (depends on candidate sizes)
-COMBINATIONS_BATCH_LIMIT = 100000  # Increased to 100,000 for worker-side batching (reduce IPC overhead)
+# 50,000 combinations per batch = ~250MB-1GB per worker (depends on candidate sizes)
+COMBINATIONS_BATCH_LIMIT = 50000  # Increased to 5 million for worker-side batching (reduce IPC overhead)
 # ============================================================================
 
 
@@ -5692,14 +5555,11 @@ def main():
     timing_marks = {}
     timing_marks['start'] = time.time()
     
-    # Load edges and cutoff parameters
-    print(f"\nLoading edges from: {args.input_pkl}")
+    # Load edges and cutoff parameters in a SINGLE file operation (avoids double-loading)
+    print(f"\nLoading edges and parameters from: {args.input_pkl}")
     timing_marks['load_edges_start'] = time.time()
-    edges_full = load_edges_from_paired_features(args.input_pkl)
+    edges_full, cutoff_params = load_edges_and_cutoff_params_from_paired_features(args.input_pkl)
     timing_marks['load_edges_end'] = time.time()
-    
-    # Load cutoff parameters from file (can be overridden by command-line args)
-    cutoff_params = load_cutoff_params_from_paired_features(args.input_pkl)
     if cutoff_params:
         # Use loaded parameters as defaults if not specified on command line
         if args.edge_cutoff == float('inf') and args.mz_cutoff is None and args.rt_cutoff is None:
