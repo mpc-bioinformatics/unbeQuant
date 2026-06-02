@@ -1,0 +1,31 @@
+FROM python:3.11-slim
+
+LABEL maintainer="unbeQuant Team"
+LABEL description="Container for map_mzml_features_v2.nf subworkflow"
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    git \
+    graphviz \
+    libigraph-dev \
+    procps \
+    pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies required by map_mzml_features scripts
+RUN pip install --no-cache-dir \
+    numpy \
+    scipy \
+    pandas \
+    matplotlib \
+    plotly \
+    python-igraph \
+    h5py \
+    psutil \
+    kaleido
+RUN ./setup_docker.sh
+RUN ./compile_and_setup_depencies.sh
+
+# Set working directory
+WORKDIR /work
