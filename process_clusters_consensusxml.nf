@@ -7,7 +7,7 @@ nextflow.enable.dsl=2
  */
 
 // Required Parameters
-params.pcc_clusters_consensus_xml = "results/feature_analysis/feature_data_lists/clusters_fraction1.0_filtered.consensusXML"  // Cluster-recovered consensusXML (includes recovered single-vertex clusters)
+params.pcc_clusters_consensus_xml = "results/feature_analysis/feature_data_lists/clusters_recovered.consensusXML"  // Cluster-recovered consensusXML (includes recovered single-vertex clusters)
 params.pcc_original_consensus_xml = "results/quantifications/features_with_annotated_identifications/consensus________0.01_fdr.consensusXML"  // Original consensus for reference
 params.pcc_feature_tsvs_dir = "results/quantifications/features_with_annotated_identifications"  // Directory containing feature TSV files
 params.pcc_outdir = "results/feature_analysis/clusters_final_report"  // Output directory

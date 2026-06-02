@@ -1913,7 +1913,7 @@ def main():
             
             print(f"[DEBUG] Converted {edges_converted} edge records with filenames")
             with open(edges_json_path, 'w') as f:
-                json.dump(edges_for_json, f, indent=2)
+                json.dump(edges_for_json, f)
             print(f"✓ Saved edges dictionary (JSON): {os.path.basename(edges_json_path)}")
             
             # [AGGRESSIVE CLEANUP] Delete the duplicate edges_for_json immediately after saving
