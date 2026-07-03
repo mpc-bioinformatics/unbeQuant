@@ -102,7 +102,7 @@ UnbeQuant generates, as of now, during and at the end following plots in the `vi
 UnbeQuant only adds a single additonal nextflow script `quantify_and_align.nf`, which could be used as a standalone script. In this step, it is expected to have already converted data as well as identified data. You can call it with the following:
 
 ```txt
-nextflow run quantify_and_align.nf \
+NXF_VER=25.10.4 nextflow run quantify_and_align.nf \
     --qal_spectra_files < Folder containing RAW-files > \
     --qal_mzmls < Folder containing mzmls-files, must be named as in RAW-files > \
     --qal_idents < Folder with identifications files in tsv format, which need  to be named as the raw_files with a specfic suffix: "*qvalue_no_decoys_fdr_0.0[15].tsv" > \
@@ -115,13 +115,13 @@ It is easier to run UnbeQuant with the `main_workflow_*` scripts, which are alre
 
 ``` shell
 # Run UnbeQuant
-nextflow run main_workflow_protein_fasta.nf \
+NXF_VER=25.10.4 nextflow run main_workflow_protein_fasta.nf \
     --main_fasta_file < Path to the FASTA files >.fasta \
     --main_raw_files_folder < Path to the .raw/.d of Thermo/Bruker files which should be analyzed > \
     --main_comet_params < Path to the comet configuration parameters text >
 
 # Run unbeQuant together with ProGFASTAGen (ProtGraph)
-nextflow run main_workflow_precursor_specific_fasta.nf \
+NXF_VER=25.10.4 nextflow run main_workflow_precursor_specific_fasta.nf \
     --main_sp_embl_file < Path to the SP-EMBL file >.txt \
     --main_raw_files_folder < Path to the .raw/.d of Thermo/Bruker files which should be analyzed > \
     --main_comet_params < Path to the comet configuration parameters text, here with digestion turned off >
