@@ -6,6 +6,7 @@ Generate summary report of feature pairing results.
 import argparse
 import json
 import os
+import gc
 from typing import Dict, List
 import matplotlib.pyplot as plt
 import matplotlib
@@ -193,25 +194,8 @@ def generate_pairing_report(paired_json: str, output_summary: str, output_stats:
         elif paired_json:
             print(f"  Warning: paired_json provided but file not found: {paired_json}")
     
-    # Load cluster data if provided
-    clusters_data = None
-    if clusters_json and os.path.exists(clusters_json):
-        try:
-            with open(clusters_json, 'r') as f:
-                clusters_data = json.load(f)
-            print(f"  Loaded cluster data from {os.path.basename(clusters_json)}")
-        except Exception as e:
-            print(f"  Warning: Could not load cluster data: {e}")
-    
-    # Load filtered cluster data if provided
-    filtered_clusters_data = None
-    if filtered_clusters_json and os.path.exists(filtered_clusters_json):
-        try:
-            with open(filtered_clusters_json, 'r') as f:
-                filtered_clusters_data = json.load(f)
-            print(f"  Loaded filtered cluster data from {os.path.basename(filtered_clusters_json)}")
-        except Exception as e:
-            print(f"  Warning: Could not load filtered cluster data: {e}")
+    # OPTIMIZATION: Cluster data loading moved to HTML generation block (lazy loading)
+    # This saves 200MB-2GB of memory when HTML generation is not needed
     
     # Initialize deletion metrics (will be populated from resolution_iterations.json)
     total_deleted = 0
@@ -352,46 +336,32 @@ def generate_pairing_report(paired_json: str, output_summary: str, output_stats:
     
     print(f"  Extracted network statistics from graph_composition (total_features={total_features})")
     
-    # Extract distances from edges JSON if provided
+    # Extract distances from edges JSON if provided (OPTIMIZED: single pass, no duplicate loading)
+    # Both 'distances' and 'intra_group_distances' use the same data from edges
     distances = []
     total_paired_groups = 0  # Count of edges (paired feature groups)
     if edges_json and os.path.exists(edges_json):
         try:
             with open(edges_json, 'r') as f:
                 edges_data = json.load(f)
-            # Flatten the nested structure to collect all distances
+            # Flatten the nested structure to collect all distances (single pass)
             for charge_key, edges_list in edges_data.items():
                 for edge in edges_list:
                     if 'distance' in edge:
                         distances.append(edge['distance'])
                     total_paired_groups += 1  # Count each edge as a paired group
             print(f"  Extracted {len(distances)} distances from {total_paired_groups} edges (paired groups)")
+            
+            # Explicit memory cleanup: delete edges_data immediately after extraction
+            del edges_data
+            gc.collect()
         except Exception as e:
             print(f"  Warning: Could not extract distances from edges file: {e}")
+    
+    # Intra-group distances are the same as distances (no duplicate loading needed)
+    intra_group_distances = distances
     
     # Calculate statistics
-    # NOTE: paired_features is always empty now (component building removed)
-    # Use total_features from composition_summary which was already correctly extracted above
-    # DO NOT recalculate as len(paired_features) - it will always be 0
-    
-    files_matched = []  # Empty list since paired_features is empty
-    
-    # Extract intra-group distances from edges (component building was removed)
-    # Intra-group distances are now calculated from the edges themselves
-    intra_group_distances = []
-    if edges_json and os.path.exists(edges_json):
-        try:
-            with open(edges_json, 'r') as f:
-                edges_data = json.load(f)
-            # Flatten the nested structure to collect all distances
-            for charge_key, edges_list in edges_data.items():
-                for edge in edges_list:
-                    if 'distance' in edge:
-                        intra_group_distances.append(edge['distance'])
-            print(f"  Extracted {len(intra_group_distances)} distances from edges file")
-        except Exception as e:
-            print(f"  Warning: Could not extract distances from edges file: {e}")
-    
     avg_intra_distance = sum(intra_group_distances) / len(intra_group_distances) if intra_group_distances else 0
     max_intra_distance = max(intra_group_distances) if intra_group_distances else 0
     min_intra_distance = min(intra_group_distances) if intra_group_distances else 0
@@ -424,9 +394,22 @@ def generate_pairing_report(paired_json: str, output_summary: str, output_stats:
         sample = file_match_uniqueness[num_files]
         print(f"    [{num_files} files] all_unique={sample.get('all_unique')}, with_duplicates={sample.get('with_duplicates')}, total={sample.get('total')}, compositions={len(sample.get('file_composition', {}))}, multiplicity_patterns={len(sample.get('multiplicity_distribution', {}))}")
     
-    # Count features with peptide identifications from ident_lookup JSON
+    # OPTIMIZATION: Create lightweight summary dict from graph_composition (instead of keeping full dict)
+    # Only extract fields needed for reporting to reduce memory footprint
+    graph_composition_summary = {
+        'composition_summary': graph_composition.get('composition_summary', {}),
+        'component_composition': graph_composition.get('component_composition', {}),
+        'file_match_uniqueness': file_match_uniqueness
+    }
+    
+    # Explicit memory cleanup: delete full graph_composition after extracting summary
+    del graph_composition
+    gc.collect()
+    print(f"  ✓ Created lightweight graph_composition_summary (memory optimized)")
+    
+    # OPTIMIZATION: Count features with identifications without loading full dict into memory
+    # Stream counting instead of loading entire ident_lookup
     features_with_ident = 0
-    ident_lookup = None
     if ident_lookup_json and os.path.exists(ident_lookup_json):
         try:
             with open(ident_lookup_json, 'r') as f:
@@ -438,6 +421,9 @@ def generate_pairing_report(paired_json: str, output_summary: str, output_stats:
                     prot_ident = feature_data.get('prot_ident', [])
                     if (pep_ident and len(pep_ident) > 0) or (prot_ident and len(prot_ident) > 0):
                         features_with_ident += 1
+            # Explicit memory cleanup: delete ident_lookup immediately after counting
+            del ident_lookup
+            gc.collect()
             print(f"  Counted {features_with_ident} features with identifications from {os.path.basename(ident_lookup_json)}")
         except Exception as e:
             print(f"  Warning: Could not load ident_lookup_json: {e}")
@@ -445,13 +431,34 @@ def generate_pairing_report(paired_json: str, output_summary: str, output_stats:
     else:
         print(f"  [Note] ident_lookup_json not provided or does not exist - identifications count will be 0")
     
-    # Extract file linkage scores from cluster data if available
-    file_linkage_scores = None
-    if clusters_data and isinstance(clusters_data, dict):
-        file_linkage_scores = clusters_data.get('file_linkage_scores')
-    
     # Generate HTML report if requested
     if output_html:
+        # OPTIMIZATION: Lazy load cluster data only if HTML output is requested
+        # This saves 200MB-2GB of memory when HTML generation is not needed
+        clusters_data = None
+        if clusters_json and os.path.exists(clusters_json):
+            try:
+                with open(clusters_json, 'r') as f:
+                    clusters_data = json.load(f)
+                print(f"  Loaded cluster data from {os.path.basename(clusters_json)}")
+            except Exception as e:
+                print(f"  Warning: Could not load cluster data: {e}")
+        
+        # Load filtered cluster data if provided
+        filtered_clusters_data = None
+        if filtered_clusters_json and os.path.exists(filtered_clusters_json):
+            try:
+                with open(filtered_clusters_json, 'r') as f:
+                    filtered_clusters_data = json.load(f)
+                print(f"  Loaded filtered cluster data from {os.path.basename(filtered_clusters_json)}")
+            except Exception as e:
+                print(f"  Warning: Could not load filtered cluster data: {e}")
+        
+        # Extract file linkage scores from cluster data if available
+        file_linkage_scores = None
+        if clusters_data and isinstance(clusters_data, dict):
+            file_linkage_scores = clusters_data.get('file_linkage_scores')
+        
         generate_html_report(
             output_html,
             total_features,
@@ -465,7 +472,7 @@ def generate_pairing_report(paired_json: str, output_summary: str, output_stats:
             file_match_uniqueness,
             pep_ident_stats,
             distances,
-            graph_composition,
+            graph_composition_summary,
             clusters_data,
             filtered_clusters_data,
             total_deleted,
@@ -563,9 +570,9 @@ def generate_pairing_report(paired_json: str, output_summary: str, output_stats:
             f.write(f"Max distance: {max(distances):.4f}\n\n")
         
         # Add graph composition statistics if available
-        if graph_composition:
-            comp_summary = graph_composition.get('composition_summary', {})
-            comp_dist = graph_composition.get('component_composition', {})
+        if graph_composition_summary:
+            comp_summary = graph_composition_summary.get('composition_summary', {})
+            comp_dist = graph_composition_summary.get('component_composition', {})
             if comp_summary:
                 f.write("GRAPH COMPOSITION STATISTICS\n")
                 f.write("-" * 70 + "\n")
@@ -679,8 +686,8 @@ def generate_pairing_report(paired_json: str, output_summary: str, output_stats:
             f.write(f"mega_complexity_threshold,{parameters.get('mega_complexity_threshold')}\n")
         
         # Write graph composition statistics
-        if graph_composition:
-            comp_summary = graph_composition.get('composition_summary', {})
+        if graph_composition_summary:
+            comp_summary = graph_composition_summary.get('composition_summary', {})
             if comp_summary:
                 f.write(f"total_components,{comp_summary.get('total_components')}\n")
                 f.write(f"total_features_in_components,{comp_summary.get('total_features')}\n")
@@ -690,7 +697,7 @@ def generate_pairing_report(paired_json: str, output_summary: str, output_stats:
                 f.write(f"max_files_in_component,{comp_summary.get('max_files_in_component')}\n")
                 
                 # Write individual composition distribution
-                comp_dist = graph_composition.get('component_composition', {})
+                comp_dist = graph_composition_summary.get('component_composition', {})
                 for comp_key, count in comp_dist.items():
                     f.write(f"component_composition_{comp_key},{count}\n")
         
@@ -1766,24 +1773,209 @@ def generate_html_report(
     total_deleted = best_iteration.get('vertices_deleted', 0)
     total_recovered_vertices = best_iteration.get('recovered_vertices', 0) if 'recovered_vertices' in best_iteration else total_recovered
     
-    # Load recovered clusters JSON if available (for reference only)
+    # Load recovered clusters JSON for detailed statistics (always try to load)
     recovered_clusters_data = {}
     recovered_from_actual_json = False
     
-    # NOTE: When optimization was performed, always use the optimization result
-    # as the source of truth, since that's what was actually used for scoring.
-    # Only try to load external JSON files if optimization did NOT provide the data.
-    if total_recovered > 0 and not optimization_was_performed:
-        # Only load from external files if we don't have optimization data
-        if filtered_clusters_json:
-            recovered_clusters_path = filtered_clusters_json.replace('_filtered.json', '_recovered.json')
+    # Try to load recovered clusters JSON for detailed statistics
+    # This is needed to calculate prot_ident and conflict statistics
+    if filtered_clusters_json:
+        recovered_clusters_path = filtered_clusters_json.replace('_filtered.json', '_recovered.json')
+        if os.path.exists(recovered_clusters_path):
             try:
                 with open(recovered_clusters_path, 'r') as f:
                     recovered_clusters_data = json.load(f)
                     recovered_from_actual_json = True
-            except FileNotFoundError:
-                pass  # Will use optimization result if available
+                    print(f"  [DEBUG] Loaded recovered clusters from {recovered_clusters_path} for statistics")
+            except Exception as e:
+                print(f"  [DEBUG] Failed to load recovered clusters: {e}")
     
+    # Calculate detailed cluster statistics (6 metrics for clusters + 6 for vertices)
+    total_clusters_final = 0
+    clusters_with_prot_ident = 0
+    clusters_with_pep_ident = 0
+    clusters_with_conflicts = 0
+    
+    # Vertex-level statistics for wrong cluster assignment
+    total_vertices = 0
+    total_vertices_with_pep_ident = 0
+    vertices_wrongly_distributed_min = 0  # Don't match dominant pep_ident
+    vertices_in_conflicting_clusters_max = 0  # All vertices in clusters with conflicts
+    
+    # Use recovered clusters data if available, otherwise fall back to filtered
+    cluster_data_for_stats = recovered_clusters_data if recovered_clusters_data else filtered_clusters_data
+    
+    if cluster_data_for_stats:
+        # Handle nested structure: components -> clusters -> vertices
+        for component_key, component_data in cluster_data_for_stats.items():
+            # Check if this is a component (has 'clusters' key) or direct cluster data
+            if isinstance(component_data, dict) and 'clusters' in component_data:
+                # Nested structure: iterate through clusters within component
+                for cluster_key, cluster_info in component_data.get('clusters', {}).items():
+                    total_clusters_final += 1
+                    vertices = cluster_info.get('vertices', [])
+                    
+                    # Count total vertices
+                    total_vertices += len(vertices)
+                    
+                    # Check for prot_ident (non-empty list)
+                    has_prot_ident = False
+                    for vertex in vertices:
+                        prot_ident = vertex.get('prot_ident')
+                        if prot_ident and len(prot_ident) > 0:
+                            has_prot_ident = True
+                            break
+                    if has_prot_ident:
+                        clusters_with_prot_ident += 1
+                    
+                    # Check for pep_ident (non-empty list) and count vertices with pep_ident
+                    has_pep_ident = False
+                    for vertex in vertices:
+                        pep_ident = vertex.get('pep_ident')
+                        if pep_ident and len(pep_ident) > 0:
+                            has_pep_ident = True
+                            total_vertices_with_pep_ident += 1
+                    if has_pep_ident:
+                        clusters_with_pep_ident += 1
+                    
+                    # Check for conflicts using existing logic
+                    cluster_has_conflict = detect_conflicting_pep_idents(vertices)
+                    if cluster_has_conflict:
+                        clusters_with_conflicts += 1
+                        # Maximum count: all vertices in this conflicting cluster
+                        vertices_in_conflicting_clusters_max += len(vertices)
+                    
+                    # Minimum count: find dominant pep_ident and count mismatches
+                    # Count frequency of each pep_ident in this cluster
+                    pep_ident_freq = {}
+                    for vertex in vertices:
+                        pep_ident = vertex.get('pep_ident')
+                        if pep_ident and len(pep_ident) > 0:
+                            # Handle both list and string types
+                            if isinstance(pep_ident, list):
+                                pep_list = pep_ident
+                            else:
+                                pep_list = [pep_ident]
+                            
+                            for pep in pep_list:
+                                pep_ident_freq[pep] = pep_ident_freq.get(pep, 0) + 1
+                    
+                    # Find dominant pep_ident (most frequent)
+                    if pep_ident_freq:
+                        dominant_pep_ident = max(pep_ident_freq, key=pep_ident_freq.get)
+                        
+                        # Count vertices that have pep_ident but don't include the dominant one
+                        for vertex in vertices:
+                            pep_ident = vertex.get('pep_ident')
+                            if pep_ident and len(pep_ident) > 0:
+                                # Handle both list and string types
+                                if isinstance(pep_ident, list):
+                                    pep_set = set(pep_ident)
+                                else:
+                                    pep_set = {pep_ident}
+                                
+                                # If dominant pep_ident is not in this vertex's pep_idents
+                                if dominant_pep_ident not in pep_set:
+                                    vertices_wrongly_distributed_min += 1
+                    
+            elif isinstance(component_data, dict) and 'vertices' in component_data:
+                # Flat structure: direct cluster data
+                total_clusters_final += 1
+                vertices = component_data.get('vertices', [])
+                
+                # Count total vertices
+                total_vertices += len(vertices)
+                
+                # Check for prot_ident (non-empty list)
+                has_prot_ident = False
+                for vertex in vertices:
+                    prot_ident = vertex.get('prot_ident')
+                    if prot_ident and len(prot_ident) > 0:
+                        has_prot_ident = True
+                        break
+                if has_prot_ident:
+                    clusters_with_prot_ident += 1
+                
+                # Check for pep_ident (non-empty list) and count vertices with pep_ident
+                has_pep_ident = False
+                for vertex in vertices:
+                    pep_ident = vertex.get('pep_ident')
+                    if pep_ident and len(pep_ident) > 0:
+                        has_pep_ident = True
+                        total_vertices_with_pep_ident += 1
+                if has_pep_ident:
+                    clusters_with_pep_ident += 1
+                
+                # Check for conflicts using existing logic
+                cluster_has_conflict = detect_conflicting_pep_idents(vertices)
+                if cluster_has_conflict:
+                    clusters_with_conflicts += 1
+                    # Maximum count: all vertices in this conflicting cluster
+                    vertices_in_conflicting_clusters_max += len(vertices)
+                
+                # Minimum count: find dominant pep_ident and count mismatches
+                # Count frequency of each pep_ident in this cluster
+                pep_ident_freq = {}
+                for vertex in vertices:
+                    pep_ident = vertex.get('pep_ident')
+                    if pep_ident and len(pep_ident) > 0:
+                        # Handle both list and string types
+                        if isinstance(pep_ident, list):
+                            pep_list = pep_ident
+                        else:
+                            pep_list = [pep_ident]
+                        
+                        for pep in pep_list:
+                            pep_ident_freq[pep] = pep_ident_freq.get(pep, 0) + 1
+                
+                # Find dominant pep_ident (most frequent)
+                if pep_ident_freq:
+                    dominant_pep_ident = max(pep_ident_freq, key=pep_ident_freq.get)
+                    
+                    # Count vertices that have pep_ident but don't include the dominant one
+                    for vertex in vertices:
+                        pep_ident = vertex.get('pep_ident')
+                        if pep_ident and len(pep_ident) > 0:
+                            # Handle both list and string types
+                            if isinstance(pep_ident, list):
+                                pep_set = set(pep_ident)
+                            else:
+                                pep_set = {pep_ident}
+                            
+                            # If dominant pep_ident is not in this vertex's pep_idents
+                            if dominant_pep_ident not in pep_set:
+                                vertices_wrongly_distributed_min += 1
+    
+    # Add unrecovered deleted vertices to total count
+    # (Deleted vertices that couldn't be recovered become singleton clusters)
+    unrecovered_deleted = total_deleted - total_recovered
+    total_vertices_including_deleted = total_vertices + unrecovered_deleted
+    
+    # Calculate cluster percentages
+    pct_clusters_with_pep_ident = 100 * clusters_with_pep_ident / total_clusters_final if total_clusters_final > 0 else 0
+    pct_conflicts_vs_total = 100 * clusters_with_conflicts / total_clusters_final if total_clusters_final > 0 else 0
+    pct_conflicts_vs_pep_ident = 100 * clusters_with_conflicts / clusters_with_pep_ident if clusters_with_pep_ident > 0 else 0
+    
+    # Calculate vertex percentages (minimum - wrongly distributed)
+    pct_wrong_vertices_vs_all = 100 * vertices_wrongly_distributed_min / total_vertices_including_deleted if total_vertices_including_deleted > 0 else 0
+    pct_wrong_vertices_vs_with_pep = 100 * vertices_wrongly_distributed_min / total_vertices_with_pep_ident if total_vertices_with_pep_ident > 0 else 0
+    
+    # Calculate vertex percentages (maximum - in conflicting clusters)
+    pct_conflict_vertices_vs_all = 100 * vertices_in_conflicting_clusters_max / total_vertices_including_deleted if total_vertices_including_deleted > 0 else 0
+    pct_conflict_vertices_vs_with_pep = 100 * vertices_in_conflicting_clusters_max / total_vertices_with_pep_ident if total_vertices_with_pep_ident > 0 else 0
+    
+    print(f"  [DEBUG] Cluster statistics calculated:")
+    print(f"    Total clusters: {total_clusters_final}")
+    print(f"    Clusters with prot_ident: {clusters_with_prot_ident}")
+    print(f"    Clusters with pep_ident: {clusters_with_pep_ident}")
+    print(f"    Clusters with conflicts: {clusters_with_conflicts}")
+    print(f"  [DEBUG] Vertex statistics calculated:")
+    print(f"    Total vertices (in clusters): {total_vertices}")
+    print(f"    Unrecovered deleted vertices: {unrecovered_deleted}")
+    print(f"    Total vertices (including deleted): {total_vertices_including_deleted}")
+    print(f"    Vertices with pep_ident: {total_vertices_with_pep_ident}")
+    print(f"    Wrongly distributed vertices (min): {vertices_wrongly_distributed_min}")
+    print(f"    Vertices in conflicting clusters (max): {vertices_in_conflicting_clusters_max}")
         
     # Build recovered_cluster_dist_html from distribution (this is after recovery)
     if recovered_size_dist:
@@ -1887,6 +2079,102 @@ def generate_html_report(
     """ + json.dumps(recovered_cluster_dist_data) + """
     </script>
     """
+            
+            # Add cluster identification and conflict statistics
+            if total_clusters_final > 0:
+                recovered_cluster_dist_html += f"""
+    <div style="margin-top: 25px; padding: 20px; background: #f8f9fa; border-radius: 8px; border-left: 4px solid #667eea;">
+        <h4 style="margin-top: 0; margin-bottom: 20px; color: #333; font-size: 1.1em;">Cluster Identification & Conflict Statistics</h4>
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 15px;">
+            <div style="background: white; padding: 15px; border-radius: 6px; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
+                <div style="font-size: 1.8em; font-weight: bold; color: #667eea; margin-bottom: 5px;">{total_clusters_final:,}</div>
+                <div style="color: #666; font-size: 0.95em;">Total Clusters</div>
+            </div>
+            <div style="background: white; padding: 15px; border-radius: 6px; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
+                <div style="font-size: 1.8em; font-weight: bold; color: #50c878; margin-bottom: 5px;">{clusters_with_prot_ident:,}</div>
+                <div style="color: #666; font-size: 0.95em;">Clusters with Protein Identification</div>
+            </div>
+            <div style="background: white; padding: 15px; border-radius: 6px; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
+                <div style="font-size: 1.8em; font-weight: bold; color: #ff6b6b; margin-bottom: 5px;">{clusters_with_conflicts:,}</div>
+                <div style="color: #666; font-size: 0.95em;">Clusters with Peptide Conflicts</div>
+            </div>
+            <div style="background: white; padding: 15px; border-radius: 6px; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
+                <div style="font-size: 1.8em; font-weight: bold; color: #4a90e2; margin-bottom: 5px;">{pct_clusters_with_pep_ident:.1f}%</div>
+                <div style="color: #666; font-size: 0.95em;">Clusters with Peptide ID (of total)</div>
+            </div>
+            <div style="background: white; padding: 15px; border-radius: 6px; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
+                <div style="font-size: 1.8em; font-weight: bold; color: #ffa94d; margin-bottom: 5px;">{pct_conflicts_vs_total:.1f}%</div>
+                <div style="color: #666; font-size: 0.95em;">Conflicts (of total clusters)</div>
+            </div>
+            <div style="background: white; padding: 15px; border-radius: 6px; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
+                <div style="font-size: 1.8em; font-weight: bold; color: #9b59b6; margin-bottom: 5px;">{pct_conflicts_vs_pep_ident:.1f}%</div>
+                <div style="color: #666; font-size: 0.95em;">Conflicts (of clusters with peptide ID)</div>
+            </div>
+        </div>
+    </div>
+    """
+            
+            # Add vertex-level wrong cluster assignment statistics
+            if total_vertices_including_deleted > 0:
+                recovered_cluster_dist_html += f"""
+    <div style="margin-top: 25px; padding: 20px; background: #fff3e0; border-radius: 8px; border-left: 4px solid #ff9800;">
+        <h4 style="margin-top: 0; margin-bottom: 15px; color: #333; font-size: 1.1em;">Vertex (Feature) Misclassification Analysis</h4>
+        
+        <!-- Total Vertex Counts -->
+        <div style="margin-bottom: 25px;">
+            <h5 style="margin: 0 0 12px 0; color: #555; font-size: 1em; font-weight: 600;">Total Features</h5>
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 12px;">
+                <div style="background: white; padding: 12px 15px; border-radius: 6px; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
+                    <div style="font-size: 1.5em; font-weight: bold; color: #333; margin-bottom: 3px;">{total_vertices_including_deleted:,}</div>
+                    <div style="color: #666; font-size: 0.9em;">All Vertices (incl. {unrecovered_deleted} unrecovered deleted)</div>
+                </div>
+                <div style="background: white; padding: 12px 15px; border-radius: 6px; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
+                    <div style="font-size: 1.5em; font-weight: bold; color: #4a90e2; margin-bottom: 3px;">{total_vertices_with_pep_ident:,}</div>
+                    <div style="color: #666; font-size: 0.9em;">Vertices with Peptide ID</div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Minimum Estimate (More Precise) -->
+        <div style="margin-bottom: 25px;">
+            <h5 style="margin: 0 0 12px 0; color: #555; font-size: 1em; font-weight: 600;">Minimum Estimate (Vertices Not Matching Dominant Peptide)</h5>
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 12px;">
+                <div style="background: white; padding: 12px 15px; border-radius: 6px; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
+                    <div style="font-size: 1.5em; font-weight: bold; color: #e74c3c; margin-bottom: 3px;">{vertices_wrongly_distributed_min:,}</div>
+                    <div style="color: #666; font-size: 0.9em;">Wrongly Distributed Vertices</div>
+                </div>
+                <div style="background: white; padding: 12px 15px; border-radius: 6px; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
+                    <div style="font-size: 1.5em; font-weight: bold; color: #e67e22; margin-bottom: 3px;">{pct_wrong_vertices_vs_all:.2f}%</div>
+                    <div style="color: #666; font-size: 0.9em;">% of All Vertices</div>
+                </div>
+                <div style="background: white; padding: 12px 15px; border-radius: 6px; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
+                    <div style="font-size: 1.5em; font-weight: bold; color: #d35400; margin-bottom: 3px;">{pct_wrong_vertices_vs_with_pep:.2f}%</div>
+                    <div style="color: #666; font-size: 0.9em;">% of Vertices with Peptide ID</div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Maximum Estimate (More Conservative) -->
+        <div>
+            <h5 style="margin: 0 0 12px 0; color: #555; font-size: 1em; font-weight: 600;">Maximum Estimate (All Vertices in Conflicting Clusters)</h5>
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 12px;">
+                <div style="background: white; padding: 12px 15px; border-radius: 6px; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
+                    <div style="font-size: 1.5em; font-weight: bold; color: #c0392b; margin-bottom: 3px;">{vertices_in_conflicting_clusters_max:,}</div>
+                    <div style="color: #666; font-size: 0.9em;">Vertices in Conflicting Clusters</div>
+                </div>
+                <div style="background: white; padding: 12px 15px; border-radius: 6px; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
+                    <div style="font-size: 1.5em; font-weight: bold; color: #8e44ad; margin-bottom: 3px;">{pct_conflict_vertices_vs_all:.2f}%</div>
+                    <div style="color: #666; font-size: 0.9em;">% of All Vertices</div>
+                </div>
+                <div style="background: white; padding: 12px 15px; border-radius: 6px; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
+                    <div style="font-size: 1.5em; font-weight: bold; color: #7d3c98; margin-bottom: 3px;">{pct_conflict_vertices_vs_with_pep:.2f}%</div>
+                    <div style="color: #666; font-size: 0.9em;">% of Vertices with Peptide ID</div>
+                </div>
+            </div>
+        </div>
+    </div>
+    """
+            
             # Build recovered summary from best iteration (if not already built from actual JSON)
             if not recovered_cluster_summary and recovered_size_dist and total_recovered_clusters > 0:
                 recovered_cluster_sizes = []

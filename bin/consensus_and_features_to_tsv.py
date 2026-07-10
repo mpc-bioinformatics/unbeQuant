@@ -59,7 +59,9 @@ if __name__ == "__main__":
     # Get number mapping:
     map_list =  cmap.getColumnHeaders()
     for key,val in map_list.items():
-        map_list[key] = ".".join(val.filename.split(".")[:-1])
+        basename = os.path.basename(val.filename)
+        stem = os.path.splitext(basename)[0]
+        map_list[key] = stem if stem else basename
 
     # Set header order for  full, reduced and minimal (and all) output
     header_per_file = [
@@ -160,12 +162,21 @@ if __name__ == "__main__":
 
             # Preload rows
             file_rows = []
+            valid_fi, valid_fi_fid = [], []
             for fi, fi_fid in zip(files_involved, feature_in_files_involved):
+                if fi not in dict_of_single_features:
+                    print("WARNING: map filename '{}' not found in loaded feature files, skipping".format(fi))
+                    continue
+                valid_fi.append(fi)
+                valid_fi_fid.append(fi_fid)
                 filter_row = dict_of_single_features[fi]["openms_fid"] == "f_" + str(fi_fid)
                 file_rows.append(dict_of_single_features[fi][filter_row])
 
                 # SanityCheck if Feature was also in ConsensusMap
-                dict_of_single_features_sanity_check[fi][file_rows[-1].index[0]] = True
+                if len(file_rows[-1].index) > 0:
+                    dict_of_single_features_sanity_check[fi][file_rows[-1].index[0]] = True
+            files_involved = valid_fi
+            feature_in_files_involved = valid_fi_fid
 
             mzs, mze, rts, rte = [], [], [], []
             for f in filenames:

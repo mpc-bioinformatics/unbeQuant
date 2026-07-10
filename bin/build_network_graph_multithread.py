@@ -862,69 +862,50 @@ def export_degree_distribution_histogram(graph: ig.Graph, vertex_attrs: Dict, ou
 
 def analyze_graph_composition(graph: ig.Graph, vertex_attrs: Dict) -> Dict:
     """
-    Analyze graph composition with detailed file and feature multiplicity information.
+    Analyze graph composition: how many connected components have how many features and files.
     
-    Returns enriched statistics including file uniqueness, multiplicity patterns, and composition breakdown
-    needed for interactive visualization:
+    Returns a dictionary with statistics like:
     {
         "component_composition": {
-            "3_3": 5,  # 5 components with 3 features from 3 files (aggregated)
+            "3_features_2_files": 5,  # 5 components with 3 features from 2 files
+            "4_features_3_files": 2,  # 2 components with 4 features from 3 files
             ...
         },
-        "composition_summary": {... overall stats ...},
-        "file_match_uniqueness": {
-            "2": {  # component_size (2 features per component)
-                "all_unique": 4,  # components where each file has exactly 1 feature
-                "with_duplicates": 1,  # components where any file has 2+ features
-                "total": 5,
-                "file_composition": {
-                    "file1.tsv, file2.tsv": 4,  # composition pattern -> count
-                    "file1.tsv, file3.tsv": 1,
-                },
-                "multiplicity_distribution": {
-                    "1x2": 4,  # 4 components with pattern: each file has 1 feature
-                    "2x1": 1,  # 1 component: one file has 2
-                },
-                "file_appearance": {
-                    "file1.tsv": 5,  # how many components of size 2 include this file
-                    "file2.tsv": 4,
-                    "file3.tsv": 1,
-                }
-            },
-            "3": {...},
-            ...
+        "composition_summary": {
+            "total_components": 10,
+            "total_features": 35,
+            "avg_features_per_component": 3.5,
+            "avg_files_per_component": 2.1,
+            "max_features_in_component": 10,
+            "max_files_in_component": 3,
+            "components_by_size": {
+                "1": 2,  # 2 components with 1 feature
+                "2": 5,  # 5 components with 2 features
+                "3": 3,  # 3 components with 3 features
+            }
         }
     }
     """
     if graph is None or graph.vcount() == 0:
-        return {
-            'component_composition': {},
-            'composition_summary': {},
-            'file_match_uniqueness': {}
-        }
+        return {'component_composition': {}, 'composition_summary': {}}
     
     components = graph.components()
     composition_map = {}  # Key: f"{num_features}_{num_files}", Value: count
-    file_match_uniqueness_by_size = {}  # component_size -> detailed analysis
     features_per_component = []
     files_per_component = []
     components_by_size = {}  # Key: num_features, Value: count
     
     for component_vertices in components:
-        # Count files and analyze file multiplicity in this component
-        file_counts = {}  # filename -> count of features from that file
-        feature_ids = []  # Track all feature IDs in component
-        
+        # Count unique files in this component
+        unique_files = set()
         for vertex_id in component_vertices:
             filename = vertex_attrs[vertex_id]['filename']
-            feature_id = vertex_attrs[vertex_id].get('feature_id', f'v{vertex_id}')
-            file_counts[filename] = file_counts.get(filename, 0) + 1
-            feature_ids.append(feature_id)
+            unique_files.add(filename)
         
         num_features = len(component_vertices)
-        num_files = len(file_counts)
+        num_files = len(unique_files)
         
-        # Create composition key for aggregate counting
+        # Create composition key
         comp_key = f"{num_features}_{num_files}"
         composition_map[comp_key] = composition_map.get(comp_key, 0) + 1
         
@@ -934,50 +915,6 @@ def analyze_graph_composition(graph: ig.Graph, vertex_attrs: Dict) -> Dict:
         # Track components by size
         size_key = str(num_features)
         components_by_size[size_key] = components_by_size.get(size_key, 0) + 1
-        
-        # Initialize uniqueness tracking for this component size if needed
-        if size_key not in file_match_uniqueness_by_size:
-            file_match_uniqueness_by_size[size_key] = {
-                'all_unique': 0,
-                'with_duplicates': 0,
-                'total': 0,
-                'file_composition': {},
-                'multiplicity_distribution': {},
-                'file_appearance': {}
-            }
-        
-        # Track this component
-        file_match_uniqueness_by_size[size_key]['total'] += 1
-        
-        # Check if all files are unique (each appears exactly once)
-        multiplicities = sorted(file_counts.values(), reverse=True)
-        is_all_unique = all(count == 1 for count in multiplicities)
-        
-        if is_all_unique:
-            file_match_uniqueness_by_size[size_key]['all_unique'] += 1
-        else:
-            file_match_uniqueness_by_size[size_key]['with_duplicates'] += 1
-        
-        # Track file composition (which files are in this component)
-        files_in_group = sorted(set(file_counts.keys()))
-        file_comp_str = ', '.join(files_in_group)
-        if file_comp_str not in file_match_uniqueness_by_size[size_key]['file_composition']:
-            file_match_uniqueness_by_size[size_key]['file_composition'][file_comp_str] = 0
-        file_match_uniqueness_by_size[size_key]['file_composition'][file_comp_str] += 1
-        
-        # Track multiplicity pattern (e.g., "1x3" for 3 files each with 1 feature, or "2x1,1x1")
-        # Format: count of unique multiplicities, repeated as needed
-        multiplicity_pattern = ','.join([f"{mult}x{multiplicities.count(mult)}" 
-                                        for mult in sorted(set(multiplicities), reverse=True)])
-        if multiplicity_pattern not in file_match_uniqueness_by_size[size_key]['multiplicity_distribution']:
-            file_match_uniqueness_by_size[size_key]['multiplicity_distribution'][multiplicity_pattern] = 0
-        file_match_uniqueness_by_size[size_key]['multiplicity_distribution'][multiplicity_pattern] += 1
-        
-        # Track file appearance (which files appear in this component size)
-        for fname in file_counts.keys():
-            if fname not in file_match_uniqueness_by_size[size_key]['file_appearance']:
-                file_match_uniqueness_by_size[size_key]['file_appearance'][fname] = 0
-            file_match_uniqueness_by_size[size_key]['file_appearance'][fname] += 1
     
     # Build summary statistics
     summary = {
@@ -994,10 +931,8 @@ def analyze_graph_composition(graph: ig.Graph, vertex_attrs: Dict) -> Dict:
     
     return {
         'component_composition': composition_map,
-        'composition_summary': summary,
-        'file_match_uniqueness': file_match_uniqueness_by_size
+        'composition_summary': summary
     }
-
 
 
 def _compute_cluster_edge_weights(subgraph: ig.Graph, weight_mode: str) -> List[float]:
@@ -2914,8 +2849,8 @@ def _evaluate_candidates_batch(candidates_batch, comp_idx, batch_num, comp_verti
 # BATCH CONFIGURATION FOR ORCHESTRATOR-LEVEL COMPONENT BATCHING
 # Components are grouped into batches where sum(complexity) <= limit
 # This ensures bounded RAM usage across all workers processing work simultaneously
-# 100,000 combinations per batch = ~500MB-2GB per worker (depends on candidate sizes)
-COMBINATIONS_BATCH_LIMIT = 100000  # Increased to 100,000 for worker-side batching (reduce IPC overhead)
+# 50,000 combinations per batch = ~250MB-1GB per worker (depends on candidate sizes)
+COMBINATIONS_BATCH_LIMIT = 50000  # Increased to 5 million for worker-side batching (reduce IPC overhead)
 # ============================================================================
 
 
@@ -3362,7 +3297,7 @@ def filter_duplicate_file_vertices(graph: ig.Graph, vertex_to_cluster_map: Dict,
             # Each worker gets its own subset of metadata and builds work_items on-demand
             # OPTIMIZATION: Use 8 workers to maximize throughput with manageable IPC overhead
             # 8 workers on 15 cores leaves headroom for system tasks
-            num_workers = min(max(4, 4), cores_to_use)  # Use 8 workers if available, min 2, max available cores
+            num_workers = min(max(2, 6), cores_to_use)  # Use 8 workers if available, min 2, max available cores
             
             print(f"Multiprocessing optimization: Using {num_workers} workers (reduced from {cores_to_use - 1} to minimize IPC overhead)", flush=True)
             print(f"Each worker processes batches up to {COMBINATIONS_BATCH_LIMIT:,} combinations\n", flush=True)
