@@ -2,12 +2,16 @@
 nextflow.enable.dsl=2
 
 // Required Parameters (Input-Files)
-params.main_fasta_file = "files/UP000000589_10090.fasta" // The FASTA file of the species to be searched (downloadable from UniProtKB)
-params.main_raw_files_folder = "/workspaces/unbeQuant/files/raws"  // The folder where the RAW/.d-files are located.
+params.main_fasta_file = "files/ProteoBenchFASTA_MixedSpecies_HYE.fasta" // The FASTA file of the species to be searched (downloadable from UniProtKB)
+params.main_raw_files_folder = "/workspaces/unbeQuant/files/raws_mounted"  // The folder where the RAW/.d-files are located.
 params.main_comet_params = "/workspaces/unbeQuant/example_configurations/comet_config.txt"  // The comet parameter file for search. NOTE: Here the digestion should be explicitly turned on (or set appropiately, depending on the input FASTA.)).
 
 // Optional Parameters
 // See each nextflow script for detailed parameter documentation.
+//
+// Feature Mapping Mode:
+//   --main_use_clusterless: true (default) = clusterless iterative workflow (map_mzml_features_v2_clusterless.nf)
+//                           false = legacy clustered workflow (map_mzml_features_v2.nf)
 //
 // Feature Pairing Parameters (map_mzml_features):
 //   --mmf_optimize_pairing: Use optimized KD-tree pairing (default: true) or basic pairing
@@ -57,6 +61,9 @@ params.sir_remove_variable_modifications = true
 params.sir_count_same_protein_as_unique = true
 
 
+// Feature mapping mode — set to true to use clusterless iterative workflow
+params.main_use_clusterless = true
+
 // Import Workflows
 PROJECT_DIR = workflow.projectDir
 include {convert_to_mgf} from PROJECT_DIR + '/ProGFASTAGen/convert_to_mgf.nf'
@@ -64,7 +71,8 @@ include {convert_to_mzml} from PROJECT_DIR + '/ProGFASTAGen/convert_to_mzml.nf'
 include {identification_via_comet} from PROJECT_DIR + '/ProGFASTAGen/identification_via_comet.nf'
 include {summarize_ident_results} from PROJECT_DIR + '/ProGFASTAGen/summarize_ident_results.nf'
 include {quantify_and_align} from PROJECT_DIR + '/quantify_and_align.nf'
-include {map_mzml_features} from PROJECT_DIR + '/map_mzml_features.nf'
+include {map_mzml_features} from PROJECT_DIR + '/map_mzml_features_v2.nf'
+include {map_mzml_features_clusterless} from PROJECT_DIR + '/map_mzml_features_v2_clusterless.nf'
 
 
 
@@ -121,7 +129,12 @@ workflow main_unbequant {
             .map { fdr, consensus_xml, feature_tsvs -> feature_tsvs }
             .collect()
             .flatten()
-        
-        // Capture subworkflow outputs to enable proper caching with -resume
-        map_mzml_features(mzml_files, tsv_files)
+
+        if (params.main_use_clusterless) {
+            // Clusterless iterative component building (default)
+            map_mzml_features_clusterless(tsv_files)
+        } else {
+            // Legacy clustered workflow
+            map_mzml_features(mzml_files, tsv_files)
+        }
 }
