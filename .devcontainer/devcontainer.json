@@ -14,8 +14,8 @@
 	},
 
 	// Mount Windows folder containing raw files into the dev container
-	"mounts": [
-		"type=bind,source=C:\\Users\\jonas\\Documents\\MS1_RAWS,target=/workspaces/unbeQuant/files/raws_mounted"
+	//"mounts": [
+	//	"type=bind,source=C:\\Users\\jonas\\Documents\\MS1_RAWS,target=/workspaces/unbeQuant/files/raws_mounted"
 	],
 
 	// Use 'forwardPorts' to make a list of ports inside the container available locally.
