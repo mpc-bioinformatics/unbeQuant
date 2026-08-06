@@ -51,24 +51,6 @@ else
 fi
 bash compile_and_setup_depencies.sh
 
-
-git clone --recursive https://github.com/mpc-bioinformatics/unbeQuant
-
-#!/usr/bin/env bash
-set -euo pipefail
-
-clone_if_missing() {
-    local url="$1"
-    local dir="$2"
-
-    if [ -d "$dir" ] && [ -n "$(ls -A "$dir" 2>/dev/null)" ]; then
-        echo "Skipping $dir (already exists and is not empty)"
-    else
-        rm -rf "$dir"   # remove if it exists but is empty
-        echo "Cloning $url into $dir"
-        git clone "$url" "$dir"
-    fi
-}
-
-clone_if_missing "https://github.com/mpc-bioinformatics/xic-extractor" "xic-extractor"
-clone_if_missing "https://github.com/mpc-bioinformatics/ProGFASTAGen" "ProGFASTAGen"
+# Initialize/update all git submodules (xic-extractor, ProGFASTAGen, third_party/ProtStatsWF)
+echo "Initializing git submodules..."
+git submodule update --init --recursive
