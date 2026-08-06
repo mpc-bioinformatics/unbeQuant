@@ -13,15 +13,21 @@
 		}
 	},
 
-	// To mount a host folder of raw files into the container, add a "mounts" entry
-	// pointing at wherever they live on YOUR machine. A hard-coded host path breaks
-	// the container on every machine but the one it was written on, so this entry is
-	// kept OUT of the committed config via:
-	//     git update-index --skip-worktree .devcontainer/devcontainer.json
-	// Undo with --no-skip-worktree before intentionally editing this file for a commit.
-	"mounts": [
-		"type=bind,source=C:\\Users\\jonas\\Documents\\MS1_RAWS,target=/workspaces/unbeQuant/files/raws_mounted"
-	],
+	// No "mounts" entry on purpose. A bind mount needs an absolute host path, and any
+	// path hard-coded here exists on exactly one machine - everywhere else container
+	// creation fails outright. To mount your own raw-file folder, add:
+	//
+	//   "mounts": [
+	//       "type=bind,source=/absolute/path/to/MS1_RAWS,target=/workspaces/unbeQuant/files/raws_mounted"
+	//   ],
+	//
+	// then keep that edit out of commits with:
+	//
+	//   git update-index --skip-worktree .devcontainer/devcontainer.json
+	//
+	// Run that in EVERY clone you add a mount to. It is a local index flag, it is not
+	// pushed, and a clone without it will silently re-commit the entry. Undo with
+	// --no-skip-worktree before intentionally editing this file.
 
 	// Use 'forwardPorts' to make a list of ports inside the container available locally.
 	// "forwardPorts": [],
