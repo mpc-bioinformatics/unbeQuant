@@ -230,9 +230,7 @@ process extract_feature_data {
         --tsv !{tsv} \
         --output_pkl !{basename}_feature_data.pkl \
         --output_json !{basename}_feature_data.json \
-        --round_up_to !{params.mmf_round_up_to} \
         --feature_mode !{params.mmf_feature_mode} \
-        --generate_diagnostic !{params.mmf_feature_center_diagnostic} \
         --rt_start_trim !{params.mmf_rt_start_trim} \
         --rt_end_trim !{params.mmf_rt_end_trim}
     '''

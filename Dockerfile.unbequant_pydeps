@@ -1,0 +1,50 @@
+# ============================================================================
+# unbeQuant Python-dependency patch image
+# ============================================================================
+# The published luxii/unbequant:latest base image is under-provisioned: several
+# libraries imported by bin/*.py are absent, so scripts that wrap the import in
+# try/except (e.g. LOESS in compare_retention_time_alignment.py) fail mid-run
+# instead of at startup. This layer adds the missing packages on top of the
+# published base, mirroring how Dockerfile.unbequant_r extends the same base.
+#
+# Build (from the repository root):
+#     docker build -f Dockerfile.unbequant_pydeps -t luxii/unbequant:pydeps .
+#
+# Then repoint the pipeline to luxii/unbequant:pydeps (see the sed one-liner in
+# the handoff), or retag locally as :latest if you prefer not to edit the .nf
+# files:
+#     docker tag luxii/unbequant:pydeps luxii/unbequant:latest
+# ============================================================================
+FROM luxii/unbequant:latest
+
+LABEL maintainer="unbeQuant Team"
+LABEL description="unbeQuant base + Python deps missing from the published image"
+
+# graphviz needs the system 'dot' binary as well as the python bindings.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        graphviz \
+    && rm -rf /var/lib/apt/lists/*
+
+# Packages imported by bin/*.py but absent from the published base image:
+#   statsmodels    -> LOESS RT alignment (compare_retention_time_alignment.py)
+#   python-igraph  -> graph / cluster construction
+#   psutil         -> memory monitoring
+#   graphviz       -> report graph rendering (python bindings for 'dot')
+#   pyvis          -> interactive network reports
+RUN pip3 install --no-cache-dir \
+        statsmodels \
+        python-igraph \
+        psutil \
+        graphviz \
+        pyvis
+
+# Overlay the current repo Python scripts over the stale copies baked into the
+# published base image. Several processes invoke scripts via `$(which <name>.py)`,
+# which resolves to /root/unbequant/bin on PATH; the published image ships an
+# older bin/ snapshot there (e.g. consensus_and_features_to_tsv.py crashes with
+# KeyError on empty map filenames). Copying only *.py keeps the base image's
+# OpenMS binaries and other assets under that dir untouched.
+COPY bin/*.py /root/unbequant/bin/
+RUN chmod +x /root/unbequant/bin/*.py
+
+WORKDIR /work

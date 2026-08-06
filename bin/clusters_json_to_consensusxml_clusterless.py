@@ -142,7 +142,6 @@ def create_consensus_xml(
     # Add workflow parameters - Filtering
     xml_lines.append('        <!-- Filtering parameters -->')
     xml_lines.append(f'        <UserParam type="int" name="mmf_filter_duplicate_file_vertices" value="{bool_to_int(workflow_params.get("mmf_filter_duplicate_file_vertices", True))}"/>')
-    xml_lines.append(f'        <UserParam type="string" name="mmf_filter_method" value="{workflow_params.get("mmf_filter_method", "simplified-modularity")}"/>')
     
     # Add component statistics
     xml_lines.append('        <!-- Component statistics -->')
@@ -288,7 +287,6 @@ def parse_args():
     parser.add_argument("--mmf_rt_cutoff", type=float, default=100)
     parser.add_argument("--mmf_edges_cutoff", type=float, default=None)
     parser.add_argument("--mmf_filter_duplicate_file_vertices", type=bool, default=True)
-    parser.add_argument("--mmf_filter_method", type=str, default="simplified-modularity")
     
     return parser.parse_args()
 
@@ -315,7 +313,6 @@ def main():
         'mmf_rt_cutoff': args.mmf_rt_cutoff,
         'mmf_edges_cutoff': args.mmf_edges_cutoff,
         'mmf_filter_duplicate_file_vertices': args.mmf_filter_duplicate_file_vertices,
-        'mmf_filter_method': args.mmf_filter_method,
     }
     
     # Generate ConsensusXML

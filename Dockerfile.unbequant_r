@@ -1,0 +1,73 @@
+# ============================================================================
+# unbeQuant + R (ProtStatsWF) image
+# ============================================================================
+# Adds R and ProtStatsWF::workflow_QC to the existing unbeQuant image, for the
+# intensity normalization step (bin/normalize_intensities_qc.R).
+#
+# This builds FROM the published image rather than from
+# Dockerfile.map_mzml_features on purpose: the published image is Ubuntu 22.04
+# and already carries the working OpenMS / pyopenms / python toolchain, whereas
+# Dockerfile.map_mzml_features is based on python:3.11-slim and does not
+# reflect how the published image was produced.
+#
+# Build (from the repository root, so the submodule is in the build context):
+#     git submodule update --init --recursive
+#     docker build -f Dockerfile.unbequant_r -t unbequant:r .
+#
+# Ubuntu 22.04 ships R 4.1, which is too old for ComplexHeatmap >= 2.24.1, so R
+# comes from the CRAN jammy repository instead.
+# ============================================================================
+FROM luxii/unbequant:latest
+
+LABEL maintainer="unbeQuant Team"
+LABEL description="unbeQuant with R + ProtStatsWF for intensity normalization"
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# ── R itself, from CRAN (Ubuntu's own R 4.1 is too old) ────────────────────
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates gnupg curl \
+    && curl -fsSL "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0xE298A3A825C0D65DFD57CBB651716619E084DAB9" \
+        | gpg --dearmor -o /usr/share/keyrings/cran.gpg \
+    && echo "deb [signed-by=/usr/share/keyrings/cran.gpg] https://cloud.r-project.org/bin/linux/ubuntu jammy-cran40/" \
+        > /etc/apt/sources.list.d/cran.list \
+    && apt-get update && apt-get install -y --no-install-recommends \
+        r-base-core \
+        r-base-dev \
+    # System libraries the R packages link against
+        libcurl4-openssl-dev \
+        libssl-dev \
+        libxml2-dev \
+        zlib1g-dev \
+        libpng-dev \
+        libjpeg-dev \
+        libtiff5-dev \
+        libfontconfig1-dev \
+        libfreetype6-dev \
+        libharfbuzz-dev \
+        libfribidi-dev \
+        libcairo2-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── Use Posit's binary package repository (see comments in Rprofile.site) ──
+COPY docker/Rprofile.site /usr/lib/R/etc/Rprofile.site
+
+# ── ProtStatsWF (vendored as a git submodule) + its dependencies ───────────
+COPY third_party/ProtStatsWF /opt/ProtStatsWF
+COPY docker/install_r_deps.R /tmp/install_r_deps.R
+RUN Rscript /tmp/install_r_deps.R /opt/ProtStatsWF && rm -f /tmp/install_r_deps.R
+
+# ── unbeQuant scripts used by the normalization / differential steps ───────
+# The published base image carries an older bin/ snapshot that predates these
+# scripts (unbequant_ttest_and_plotting.py is absent from it), so they are
+# installed explicitly rather than relied upon from the base.
+COPY bin/prepare_qc_input.py             /usr/local/bin/prepare_qc_input.py
+COPY bin/normalize_intensities_qc.R      /usr/local/bin/normalize_intensities_qc.R
+COPY bin/merge_normalized_intensities.py /usr/local/bin/merge_normalized_intensities.py
+COPY bin/unbequant_ttest_and_plotting.py /usr/local/bin/unbequant_ttest_and_plotting.py
+RUN chmod +x /usr/local/bin/prepare_qc_input.py \
+             /usr/local/bin/normalize_intensities_qc.R \
+             /usr/local/bin/merge_normalized_intensities.py \
+             /usr/local/bin/unbequant_ttest_and_plotting.py
+
+WORKDIR /work

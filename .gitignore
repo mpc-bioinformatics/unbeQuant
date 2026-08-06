@@ -1,10 +1,20 @@
 # Nextflow working directories and caches
 work/
+work_*/
 .nextflow/
 .nextflow.log*
 timeline.html
 trace.txt
 report.html
+
+# Compiled OpenMS tree produced by compile_and_setup_depencies.sh (~1.5 GB).
+# Not needed to run the pipeline: every process executes inside a container that
+# ships its own OpenMS.
+bin/openms/
+
+# Bulk pipeline outputs that land in the repository root
+clusters_raw_quantification_with_identifications.tsv
+compile_out.txt
 
 # Python
 __pycache__/

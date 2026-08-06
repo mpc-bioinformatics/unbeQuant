@@ -1,0 +1,9 @@
+[submodule "xic-extractor"]
+	path = xic-extractor
+	url = https://github.com/mpc-bioinformatics/xic-extractor.git
+[submodule "ProGFASTAGen"]
+	path = ProGFASTAGen
+	url = https://github.com/mpc-bioinformatics/ProGFASTAGen.git
+[submodule "third_party/ProtStatsWF"]
+	path = third_party/ProtStatsWF
+	url = https://github.com/mpc-bioinformatics/ProtStatsWF.git

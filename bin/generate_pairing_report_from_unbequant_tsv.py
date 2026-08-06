@@ -29,6 +29,8 @@ csv.field_size_limit(sys.maxsize)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from generate_pairing_report_v2_clusterless import (
+    _MAX_SPLIT_IDS_SHOWN,
+    _MAX_SPLIT_ROWS,
     analyze_component_sizes,
     analyze_pep_idents,
     plot_component_size_distribution,
@@ -265,6 +267,13 @@ def generate_html_report(
                     f'Appearing in ≥2 components: '
                     f'<strong>{mcs["total_multi_component"]:,}</strong></p>'
                 )
+                html_parts.append(
+                    f'<p>Components holding a pep_ident that also occurs elsewhere: '
+                    f'<strong>{mcs["components_split"]:,}</strong> of '
+                    f'{pep_ident_stats["components_with_pep_idents"]:,} identified components '
+                    f'(<strong>{mcs["pct_components_split"]:.1f}%</strong>) &mdash; these are '
+                    f'the components that would merge if the split were resolved.</p>'
+                )
                 multi_hist_img = plot_multi_component_histogram(mcs.get("distribution", {}))
                 if multi_hist_img:
                     html_parts.append('<div class="plot">')
@@ -274,18 +283,47 @@ def generate_html_report(
                     )
                     html_parts.append('</div>')
 
-                top_redundant = mcs.get("top_redundant", [])
-                if top_redundant:
-                    html_parts.append(f'<h4>Top {len(top_redundant)} Most Redundant Pep_idents</h4>')
-                    html_parts.append(
-                        '<table>'
-                        '<tr><th>#</th><th>Pep_ident sequence</th><th>Components</th></tr>'
-                    )
-                    for rank, (pid, n_comp) in enumerate(top_redundant, 1):
+                split_pep_idents = mcs.get("split_pep_idents", [])
+                if split_pep_idents:
+                    def _split_rows(entries, start=1):
+                        rows = [
+                            '<table>'
+                            '<tr><th>#</th><th>Pep_ident sequence</th><th>Components</th>'
+                            '<th>Component IDs</th></tr>'
+                        ]
+                        for rank, entry in enumerate(entries, start):
+                            ids = entry["component_ids"]
+                            shown = ", ".join(str(c) for c in ids[:_MAX_SPLIT_IDS_SHOWN])
+                            if len(ids) > _MAX_SPLIT_IDS_SHOWN:
+                                shown += (f' <em>+{len(ids) - _MAX_SPLIT_IDS_SHOWN} '
+                                          f'more</em>')
+                            rows.append(
+                                f'<tr><td>{rank}</td><td><code>{entry["pep_ident"]}</code></td>'
+                                f'<td>{entry["n_components"]:,}</td>'
+                                f'<td style="font-size:.85em">{shown}</td></tr>'
+                            )
+                        rows.append('</table>')
+                        return rows
+
+                    top = split_pep_idents[:20]
+                    html_parts.append(f'<h4>Top {len(top)} Most Redundant Pep_idents</h4>')
+                    html_parts.extend(_split_rows(top))
+
+                    if len(split_pep_idents) > len(top):
+                        listed = split_pep_idents[:_MAX_SPLIT_ROWS]
+                        html_parts.append('<details>')
                         html_parts.append(
-                            f'<tr><td>{rank}</td><td><code>{pid}</code></td><td>{n_comp:,}</td></tr>'
+                            f'<summary>All {len(split_pep_idents):,} pep_idents split '
+                            f'across ≥2 components</summary>'
                         )
-                    html_parts.append('</table>')
+                        html_parts.extend(_split_rows(listed))
+                        if len(split_pep_idents) > len(listed):
+                            html_parts.append(
+                                f'<p style="color:#7f8c8d"><em>Showing the '
+                                f'{len(listed):,} most redundant of '
+                                f'{len(split_pep_idents):,}.</em></p>'
+                            )
+                        html_parts.append('</details>')
 
             vcs = pep_ident_stats.get("vertex_conflict_stats")
             if vcs:
@@ -383,13 +421,27 @@ def generate_text_summary(
                     f"Pep_ident redundancy: {mcs['total_multi_component']:,} of "
                     f"{mcs['total_unique_pep_idents']:,} unique pep_idents appear in ≥2 components"
                 )
+                lines.append(
+                    f"Components affected:  {mcs['components_split']:,} of "
+                    f"{pep_ident_stats['components_with_pep_idents']:,} identified components "
+                    f"({mcs['pct_components_split']:.1f}%) hold a pep_ident that also "
+                    f"occurs elsewhere"
+                )
                 if dist_str:
                     lines.append(f"  Distribution: {dist_str}")
-                top_redundant = mcs.get("top_redundant", [])
-                if top_redundant:
-                    lines.append(f"  Top {len(top_redundant)} most redundant pep_idents:")
-                    for rank, (pid, n_comp) in enumerate(top_redundant, 1):
-                        lines.append(f"    {rank:2d}. {pid}  ({n_comp} components)")
+                split_pep_idents = mcs.get("split_pep_idents", [])
+                if split_pep_idents:
+                    top = split_pep_idents[:20]
+                    lines.append(f"  Top {len(top)} most redundant pep_idents:")
+                    for rank, entry in enumerate(top, 1):
+                        ids = entry["component_ids"]
+                        shown = ", ".join(str(c) for c in ids[:_MAX_SPLIT_IDS_SHOWN])
+                        if len(ids) > _MAX_SPLIT_IDS_SHOWN:
+                            shown += f", +{len(ids) - _MAX_SPLIT_IDS_SHOWN} more"
+                        lines.append(
+                            f"    {rank:2d}. {entry['pep_ident']}  "
+                            f"({entry['n_components']} components: {shown})"
+                        )
 
             vcs = pep_ident_stats.get("vertex_conflict_stats")
             if vcs:

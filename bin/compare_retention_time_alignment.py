@@ -2,23 +2,34 @@
 """
 Compare retention time alignment across multiple feature files.
 
-For each pair of files, matches features by pep_ident and rounded m/z center,
-then plots how retention time differences vary across the m/z range.
+For every ordered pair of files, features are matched by shared pep_ident (and
+closest m/z / RT), the RT difference `f2_rt - f1_rt` is computed, and a correction
+model `model(rt_file1) = rt_diff` is fitted per pair. The fitted models are written
+to `fitted_corrections.json` (consumed downstream by the pairing step) alongside a
+human-facing interactive HTML report.
 
 Useful for analyzing retention time drifts between LC runs or alignment quality.
+
+Sections (in file order):
+  1. Formatting & outlier helpers
+  2. Curve-fitting models      - per-method fitters, picklable wrappers, dispatcher
+  3. Feature loading & coordinate access
+  4. Feature matching & pairwise comparison
+  5. HTML report (plots)
+  6. Corrections export (JSON)
+  7. Entry point / orchestration (main)
 """
 
 import argparse
 import json
 import glob
 import os
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 from collections import defaultdict
 from datetime import datetime
 import pickle
 import base64
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 import numpy as np
 from scipy.interpolate import UnivariateSpline, Rbf
 try:
@@ -26,13 +37,13 @@ try:
     HAS_STATSMODELS = True
 except ImportError:
     HAS_STATSMODELS = False
-try:
-    from sklearn.gaussian_process import GaussianProcessRegressor
-    from sklearn.gaussian_process.kernels import RBF as SKLearnRBF, ConstantKernel as C
-    HAS_SKLEARN = True
-except ImportError:
-    HAS_SKLEARN = False
 
+
+# =============================================================================
+# 1. FORMATTING & OUTLIER HELPERS
+# Pure helpers: format polynomial coefficients for display, and compute a
+# symmetric percentile-trim threshold that excludes RT-diff outliers before fitting.
+# =============================================================================
 
 def _format_coefficient(coeff: float, decimal_points: int = 35) -> str:
     """Format coefficient with specified decimal precision, stripping trailing zeros.
@@ -48,8 +59,8 @@ def _format_coefficient(coeff: float, decimal_points: int = 35) -> str:
 
 def calculate_percentile_threshold(values: List[float], percentile: float) -> Tuple[float, float]:
     """
-    Calculate outlier threshold using percentile-based approach (IQR method).
-    
+    Calculate an outlier threshold by symmetric percentile trimming.
+
     Uses the specified percentile to define the acceptable data range.
     For example, percentile=0.95 keeps the central 95% of data, excluding the outer 5%.
     
@@ -71,7 +82,7 @@ def calculate_percentile_threshold(values: List[float], percentile: float) -> Tu
         # Use full data
         return float('inf'), 100.0
     
-    # Calculate the percentile value using IQR-based approach
+    # Trim symmetrically: split the excluded fraction between both tails.
     # For percentile=0.95, calculate the 97.5th percentile to exclude top 5% outliers
     # This is equivalent to keeping the central (percentile*100)% of data
     lower_percentile = (1.0 - percentile) / 2.0 * 100  # e.g., 2.5 for percentile=0.95
@@ -86,92 +97,84 @@ def calculate_percentile_threshold(values: List[float], percentile: float) -> Tu
     return threshold, percentile * 100.0
 
 
+# =============================================================================
+# 2. CURVE-FITTING MODELS
+# One fitter per method (polynomial / spline / loess / rbf / piecewise), two small
+# picklable model wrappers (LOESS + piecewise have no native callable form), and
+# fit_retention_time_model(), the dispatcher that also serializes the fit for JSON.
+# Each fitter takes (x=rt_file1, y=rt_diff); all but the polynomial one return
+# (model, html_eq, plain_eq), where those two strings are identical except for RBF.
+#
+# Fitting is the expensive part of this script, so every fit happens exactly once:
+# Phase 5 fits each ordered file pair and the resulting model is reused for the
+# JSON equation, the pickled payload, and the report curve. Rendering is kept
+# separate from fitting - format_polynomial_equation() turns already-fitted
+# coefficients into either markup form without refitting.
+# =============================================================================
+
+def format_polynomial_equation(coefficients, degree: int, decimal_points: int = 35, html: bool = True) -> str:
+    """
+    Render fitted polynomial coefficients as an equation string.
+
+    Two renderings of the same numbers: `html=True` gives `x<sup>2</sup>` for the
+    report, `html=False` gives `*x^2` for the JSON and console. Taking the
+    coefficients as an argument means a caller that needs both forms fits once.
+
+    Args:
+        coefficients: Polynomial coefficients, highest power first (np.poly1d order)
+        degree: Degree the fit actually used
+        decimal_points: Decimal places for formatting coefficients
+        html: Superscript markup if True, plain ASCII if False
+
+    Returns:
+        Equation string, e.g. "y = 1.5*x^2 - 0.2*x + 3.0"
+    """
+    terms = []
+    for i, coeff in enumerate(coefficients):
+        power = degree - i
+        coeff_str = _format_coefficient(coeff, decimal_points)
+        if power == 0:
+            terms.append(coeff_str)
+        elif power == 1:
+            terms.append(f"{coeff_str}x" if html else f"{coeff_str}*x")
+        else:
+            terms.append(f"{coeff_str}x<sup>{power}</sup>" if html else f"{coeff_str}*x^{power}")
+
+    return ("y = " + " ".join(terms)).replace("+-", "-")
+
+
 def fit_polynomial_equation(x_values: List[float], y_values: List[float], degree: int = 8, decimal_points: int = 35) -> Tuple[np.poly1d, str, int]:
     """
     Fit a polynomial to data and return the polynomial object and equation string.
-    
+
     Args:
         x_values: X coordinates
         y_values: Y coordinates
         degree: Polynomial degree (default 8)
         decimal_points: Decimal places for formatting coefficients (default 35)
-    
+
     Returns:
-        Tuple of (polynomial object, equation string, actual_degree_used)
+        Tuple of (polynomial object, HTML equation string, actual_degree_used)
     """
     if len(x_values) < degree + 1:
         # Not enough points, reduce degree
         degree = max(1, len(x_values) - 1)
-    
-    # Fit polynomial
+
     coeffs = np.polyfit(x_values, y_values, degree)
     poly = np.poly1d(coeffs)
-    
-    # Generate equation string
-    terms = []
-    for i, coeff in enumerate(coeffs):
-        power = degree - i
-        coeff_str = _format_coefficient(coeff, decimal_points)
-        if power == 0:
-            terms.append(coeff_str)
-        elif power == 1:
-            terms.append(f"{coeff_str}x")
-        else:
-            terms.append(f"{coeff_str}x<sup>{power}</sup>")
-    
-    equation = "y = " + " ".join(terms).replace("+ ", "+ ").replace("- ", "- ")
-    equation = equation.replace("+-", "-")
-    
-    return poly, equation, degree
+
+    return poly, format_polynomial_equation(coeffs, degree, decimal_points, html=True), degree
 
 
-def fit_polynomial_equation_plain(x_values: List[float], y_values: List[float], degree: int = 8, decimal_points: int = 35) -> Tuple[np.poly1d, str, int]:
+def fit_spline_equation(x_values: List[float], y_values: List[float], smoothing_factor: float = 100, degree: int = 3) -> Tuple[object, str, str]:
     """
-    Fit a polynomial to data and return plain-text equation (no HTML tags).
-    
-    Args:
-        x_values: X coordinates
-        y_values: Y coordinates
-        degree: Polynomial degree (default 8)
-        decimal_points: Decimal places for formatting coefficients (default 35)
-    
-    Returns:
-        Tuple of (polynomial object, plain-text equation string, actual_degree_used)
-    """
-    if len(x_values) < degree + 1:
-        degree = max(1, len(x_values) - 1)
-    
-    coeffs = np.polyfit(x_values, y_values, degree)
-    poly = np.poly1d(coeffs)
-    
-    # Generate plain-text equation string
-    terms = []
-    for i, coeff in enumerate(coeffs):
-        power = degree - i
-        coeff_str = _format_coefficient(coeff, decimal_points)
-        if power == 0:
-            terms.append(coeff_str)
-        elif power == 1:
-            terms.append(f"{coeff_str}*x")
-        else:
-            terms.append(f"{coeff_str}*x^{power}")
-    
-    equation = "y = " + " ".join(terms).replace("+ ", "+ ").replace("- ", "- ")
-    equation = equation.replace("+-", "-")
-    
-    return poly, equation, degree
-
-
-def fit_spline_equation(x_values: List[float], y_values: List[float], smoothing_factor: float = 100, degree: int = 3, decimal_points: int = 35) -> Tuple[object, str, str]:
-    """
-    Fit a cubic spline to data using UnivariateSpline.
+    Fit a spline of varying degree to data using UnivariateSpline.
     
     Args:
         x_values: X coordinates (will be sorted internally)
         y_values: Y coordinates (corresponding to x_values)
         smoothing_factor: Smoothing factor for spline (higher = smoother)
         degree: Polynomial degree of spline (default 3 for cubic)
-        decimal_points: Decimal places for knot display
     
     Returns:
         Tuple of (spline_object, html_equation_string, plain_text_equation_string)
@@ -191,55 +194,55 @@ def fit_spline_equation(x_values: List[float], y_values: List[float], smoothing_
     
     if len(x_unique) < 4:
         raise ValueError(f"Not enough unique x values for spline (need ≥4, got {len(x_unique)})")
-    
-    # Fit spline with adjusted degree based on available points
-    adjusted_degree = min(degree, len(x_unique) - 1)
+
+    # Cap the degree at what the data allows and at UnivariateSpline's hard limit of 5.
+    adjusted_degree = min(degree, 5, len(x_unique) - 1)
     spline = UnivariateSpline(x_unique, y_unique, s=smoothing_factor, k=adjusted_degree)
-    
+
     # Generate knot information for display
     knots = spline.get_knots()
-    
-    html_eq = f"Cubic Spline (k={adjusted_degree}, s={smoothing_factor:.2f}), {len(knots)} knots"
-    plain_eq = f"Cubic Spline (k={adjusted_degree}, s={smoothing_factor:.2f}), {len(knots)} knots"
+
+    html_eq = f"Spline (k={adjusted_degree}, s={smoothing_factor:.2f}), {len(knots)} knots"
+    plain_eq = f"Spline (k={adjusted_degree}, s={smoothing_factor:.2f}), {len(knots)} knots"
     
     return spline, html_eq, plain_eq
 
 
-def fit_loess_equation(x_values: List[float], y_values: List[float], smoothing_fraction: float = 0.3, decimal_points: int = 35) -> Tuple[object, str, str]:
+def fit_loess_equation(x_values: List[float], y_values: List[float], smoothing_fraction: float = 0.3, iterations: int = 3) -> Tuple[object, str, str]:
     """
     Fit LOESS (Locally Weighted Regression) to data using statsmodels.
-    
+
     Args:
-        x_values: X coordinates  
+        x_values: X coordinates
         y_values: Y coordinates
-        smoothing_fraction: Fraction of data to use for local regression (0-1)
-        decimal_points: Decimal places for coefficient display
-    
+        smoothing_fraction: Fraction of data used for each local regression (0-1); smaller = more local
+        iterations: Number of robustifying iterations passed to lowess (default 3)
+
     Returns:
         Tuple of (loess_object, html_equation_string, plain_text_equation_string)
     """
     if not HAS_STATSMODELS:
         raise ImportError("statsmodels required for LOESS fitting. Install: pip install statsmodels")
-    
+
     # Sort data for LOESS
     sorted_indices = np.argsort(x_values)
     x_sorted = np.array(x_values)[sorted_indices]
     y_sorted = np.array(y_values)[sorted_indices]
-    
+
     # Fit LOESS model
-    loess_model = lowess(y_sorted, x_sorted, frac=smoothing_fraction, it=3)
-    
+    loess_model = lowess(y_sorted, x_sorted, frac=smoothing_fraction, it=iterations)
+
     # loess_model is an ndarray: [[x1, y1_fitted], [x2, y2_fitted], ...]
     # Use module-level LOESSInterpolator class (supports pickling)
     loess_interpolator = LOESSInterpolator(loess_model[:, 0], loess_model[:, 1])
-    
-    html_eq = f"LOESS (frac={smoothing_fraction:.3f}, it=3), {len(loess_model)} fitted points"
-    plain_eq = f"LOESS (frac={smoothing_fraction:.3f}, it=3), {len(loess_model)} fitted points"
-    
+
+    html_eq = f"LOESS (frac={smoothing_fraction:.3f}, it={iterations}), {len(loess_model)} fitted points"
+    plain_eq = f"LOESS (frac={smoothing_fraction:.3f}, it={iterations}), {len(loess_model)} fitted points"
+
     return loess_interpolator, html_eq, plain_eq
 
 
-def fit_rbf_equation(x_values: List[float], y_values: List[float], rbf_function: str = 'multiquadric', epsilon: float = 1.0, decimal_points: int = 35) -> Tuple[object, str, str]:
+def fit_rbf_equation(x_values: List[float], y_values: List[float], rbf_function: str = 'multiquadric', epsilon: float = 1.0) -> Tuple[object, str, str]:
     """
     Fit Radial Basis Function to data using scipy.interpolate.Rbf.
     
@@ -248,7 +251,6 @@ def fit_rbf_equation(x_values: List[float], y_values: List[float], rbf_function:
         y_values: Y coordinates (corresponding to x_values)
         rbf_function: RBF function type (multiquadric, inverse_multiquadric, gaussian, etc.)
         epsilon: RBF shape parameter
-        decimal_points: Decimal places for parameter display
     
     Returns:
         Tuple of (rbf_object, html_equation_string, plain_text_equation_string)
@@ -274,31 +276,43 @@ def fit_rbf_equation(x_values: List[float], y_values: List[float], rbf_function:
 
 
 # Define LOESSInterpolator class at module level so it can be pickled
+# --- Picklable model wrappers -------------------------------------------------
+# LOESS and piecewise fits have no single evaluable/serializable form of their own,
+# so we wrap them in module-level classes. They MUST stay at module scope with
+# stable names/interfaces: the pairing script imports them to unpickle the models
+# stored in fitted_corrections.json.
+
 class LOESSInterpolator:
     """LOESS interpolator that can be pickled."""
     def __init__(self, x_data, y_data):
+        # lowess() returns only sampled (x, fitted_y) points, not a callable model.
+        # Store them (already sorted ascending by x) so we can evaluate anywhere.
         self.x_data = np.array(x_data)
         self.y_data = np.array(y_data)
-    
+
     def __call__(self, x_val):
         """Evaluate LOESS interpolator at x_val (scalar or array)."""
-        # Handle both scalar and array inputs
+        # Dispatch: array/list in -> array out (HTML curve); scalar in -> scalar out (pairing).
         if isinstance(x_val, (list, np.ndarray)):
             return np.array([self._eval_scalar(x) for x in np.atleast_1d(x_val)])
         else:
             return self._eval_scalar(x_val)
-    
+
     def _eval_scalar(self, x_val):
         """Evaluate at a single scalar value."""
-        # Linear interpolation between LOESS fitted points
+        # Outside the fitted range: clamp to the endpoint (flat extrapolation, no runaway slope).
         if x_val <= self.x_data[0]:
             return self.y_data[0]
         if x_val >= self.x_data[-1]:
             return self.y_data[-1]
+        # Inside: find the bracketing pair x_data[idx-1] < x_val <= x_data[idx]...
         idx = np.searchsorted(self.x_data, x_val)
-        # Linear interpolation
+        # ...and linearly interpolate between those two fitted points.
         x0, x1 = self.x_data[idx-1], self.x_data[idx]
         y0, y1 = self.y_data[idx-1], self.y_data[idx]
+        # Duplicate fitted x's (lowess does not dedupe) would divide by zero here.
+        if x1 == x0:
+            return y0
         return y0 + (y1 - y0) * (x_val - x0) / (x1 - x0)
 
 
@@ -328,7 +342,7 @@ class PiecewisePolynomial:
         return self.segments[-1]['poly'](x_val)
 
 
-def fit_piecewise_polynomial(x_values: List[float], y_values: List[float], num_segments: int = 5, poly_degree: int = 2, decimal_points: int = 35) -> Tuple[object, str, str]:
+def fit_piecewise_polynomial(x_values: List[float], y_values: List[float], num_segments: int = 5, poly_degree: int = 2) -> Tuple[object, str, str]:
     """
     Fit piecewise polynomials (split x range into segments, fit polynomial to each).
     
@@ -337,7 +351,6 @@ def fit_piecewise_polynomial(x_values: List[float], y_values: List[float], num_s
         y_values: Y coordinates
         num_segments: Number of segments to split into
         poly_degree: Polynomial degree for each segment
-        decimal_points: Decimal places for coefficient display
     
     Returns:
         Tuple of (piecewise_object, html_equation_string, plain_text_equation_string)
@@ -385,8 +398,12 @@ def fit_piecewise_polynomial(x_values: List[float], y_values: List[float], num_s
     return pw_model, html_eq, plain_eq
 
 
-def fit_retention_time_model(x_values: List[float], y_values: List[float], 
-                            fitting_method: str = 'polynomial', 
+# --- Unified fitting dispatcher -----------------------------------------------
+# Picks the fitter for `fitting_method`, and builds the JSON-serializable payload:
+# polynomial -> rounded coefficient list; everything else -> base64 pickle of the model.
+
+def fit_retention_time_model(x_values: List[float], y_values: List[float],
+                            fitting_method: str = 'polynomial',
                             polynomial_degree: int = 8,
                             spline_degree: int = 3,
                             spline_smoothing: float = 100,
@@ -413,62 +430,52 @@ def fit_retention_time_model(x_values: List[float], y_values: List[float],
     Returns:
         Tuple of (model_object, html_equation, plain_equation, serialization_dict)
     """
-    x_array = np.array(x_values)
-    y_array = np.array(y_values)
-    
-    fit_params = {}
     serialization_data = {}
-    
+
     if fitting_method == 'polynomial':
         model, html_eq, degree = fit_polynomial_equation(x_values, y_values, degree=polynomial_degree, decimal_points=decimal_points)
-        plain_eq = html_eq  # Same for polynomial
-        fit_params['degree'] = degree
-        fit_params['decimal_points'] = decimal_points
-        # Round coefficients to 40 decimals max for storage and calculations
+        # Same coefficients, ASCII rendering - no refit needed.
+        plain_eq = format_polynomial_equation(model.coefficients, degree, decimal_points, html=False)
+        # Polynomial serializes as its plain coefficient list (rounded to 40 decimals max).
         def round_coefficient(c: float) -> float:
             return round(float(c), 40)
         serialization_data['coefficients'] = [round_coefficient(c) for c in model.coefficients]
         serialization_data['degree'] = int(degree)
-    
+
     elif fitting_method == 'spline':
-        model, html_eq, plain_eq = fit_spline_equation(x_values, y_values, smoothing_factor=spline_smoothing, degree=spline_degree, decimal_points=decimal_points)
-        fit_params['smoothing_factor'] = spline_smoothing
-        fit_params['degree'] = spline_degree
-        # Spline serialized as pickle (like RBF, LOESS, piecewise)
+        model, html_eq, plain_eq = fit_spline_equation(x_values, y_values, smoothing_factor=spline_smoothing, degree=spline_degree)
+        # Spline/RBF/LOESS/piecewise serialize as a base64-encoded pickle of the model.
         model_bytes = pickle.dumps(model)
         serialization_data['model_pickle'] = base64.b64encode(model_bytes).decode('utf-8')
-    
+
     elif fitting_method == 'loess':
-        if not HAS_STATSMODELS:
-            raise ImportError("statsmodels required for LOESS. Install: pip install statsmodels")
-        model, html_eq, plain_eq = fit_loess_equation(x_values, y_values, smoothing_fraction=loess_fraction, decimal_points=decimal_points)
-        fit_params['smoothing_fraction'] = loess_fraction
-        fit_params['iterations'] = loess_iterations
-        # For LOESS, we'll serialize as pickle since it has a complex structure
+        model, html_eq, plain_eq = fit_loess_equation(x_values, y_values, smoothing_fraction=loess_fraction, iterations=loess_iterations)
         model_bytes = pickle.dumps(model)
         serialization_data['model_pickle'] = base64.b64encode(model_bytes).decode('utf-8')
-    
+
     elif fitting_method == 'rbf':
-        model, html_eq, plain_eq = fit_rbf_equation(x_values, y_values, rbf_function='multiquadric', epsilon=1.0, decimal_points=decimal_points)
-        fit_params['rbf_function'] = 'multiquadric'
-        fit_params['epsilon'] = 1.0
-        # RBF also serialized as pickle
+        model, html_eq, plain_eq = fit_rbf_equation(x_values, y_values, rbf_function='multiquadric', epsilon=1.0)
         model_bytes = pickle.dumps(model)
         serialization_data['model_pickle'] = base64.b64encode(model_bytes).decode('utf-8')
-    
+
     elif fitting_method == 'piecewise':
-        model, html_eq, plain_eq = fit_piecewise_polynomial(x_values, y_values, num_segments=5, poly_degree=2, decimal_points=decimal_points)
-        fit_params['num_segments'] = 5
-        fit_params['poly_degree'] = 2
-        # Piecewise serialized as pickle
+        model, html_eq, plain_eq = fit_piecewise_polynomial(x_values, y_values, num_segments=5, poly_degree=2)
         model_bytes = pickle.dumps(model)
         serialization_data['model_pickle'] = base64.b64encode(model_bytes).decode('utf-8')
-    
+
     else:
         raise ValueError(f"Unknown fitting method: {fitting_method}")
-    
+
     return model, html_eq, plain_eq, serialization_data
 
+
+# =============================================================================
+# 3. FEATURE LOADING & COORDINATE ACCESS
+# Read the per-file feature JSON, and resolve which numeric field a coordinate
+# comes from. get_coordinate() maps the 'start'/'center'/'geo_center' source (set
+# by the .nf) to the actual feature key; resolve_mz_collisions() finds, per pep,
+# the minimum m/z decimal precision that keeps peptides distinguishable.
+# =============================================================================
 
 def load_feature_json(filepath: str) -> List[Dict]:
     """Load feature data from JSON file."""
@@ -485,30 +492,22 @@ def round_with_precision(value: float, decimals: int) -> float:
     return round(value, decimals)
 
 
-def find_decimal_precision(value: float, max_decimals: int = 4) -> Tuple[int, float]:
-    """
-    Find the minimum decimal precision needed for a value.
-    Tries from 0 decimals up to max_decimals.
-    """
-    for decimals in range(max_decimals + 1):
-        rounded = round_with_precision(value, decimals)
-        # Check if this precision distinguishes the value
-        if abs(rounded - value) < 10 ** (-(decimals + 1)):
-            return decimals, rounded
-    return max_decimals, round_with_precision(value, max_decimals)
-
-
 def get_coordinate(feature: Dict, coord_type: str, source: str) -> float:
     """
     Extract a coordinate value from a feature based on type and source.
-    
+
     Args:
         feature: Feature dictionary
         coord_type: 'mz' or 'rt'
         source: 'geo_center', 'center', or 'start'
-    
+
     Returns:
         Coordinate value
+
+    Raises:
+        ValueError: if the requested key is missing or the value is 0.0. A real m/z or RT
+        is always > 0, so a missing/zero coordinate means malformed input, and silently
+        defaulting it would corrupt the fitted corrections; fail loudly instead.
     """
     if source == 'geo_center':
         key = 'x_center_geo' if coord_type == 'mz' else 'y_center_geo'
@@ -518,8 +517,14 @@ def get_coordinate(feature: Dict, coord_type: str, source: str) -> float:
         key = 'mz_start' if coord_type == 'mz' else 'rt_start'
     else:
         raise ValueError(f"Unknown coordinate source: {source}")
-    
-    return feature.get(key, 0.0)
+
+    value = feature.get(key)
+    if value is None or value == 0.0:
+        raise ValueError(
+            f"Missing or zero {coord_type} coordinate (key '{key}', source '{source}') "
+            f"for feature {feature.get('openms_fid', feature.get('filename', '<unknown>'))}"
+        )
+    return value
 
 
 def resolve_mz_collisions(features_by_pep: Dict[str, Dict], mz_source: str = 'geo_center') -> Dict[str, Tuple[int, float]]:
@@ -570,22 +575,29 @@ def resolve_mz_collisions(features_by_pep: Dict[str, Dict], mz_source: str = 'ge
     return pep_to_mz
 
 
-def match_features_by_closest_mz_and_rt(features1: List[Dict], features2: List[Dict], 
-                                        mz_weight: float = 1.0, rt_weight: float = 1.0,
+# =============================================================================
+# 4. FEATURE MATCHING & PAIRWISE COMPARISON
+# match_features_by_closest_mz_and_rt() greedily pairs same-pep features across two
+# files by weighted (m/z, RT) distance; compare_files() runs that over all shared
+# peptides and returns the matched RT differences (+ stats) that feed the fit.
+# =============================================================================
+
+def match_features_by_closest_mz_and_rt(features1: List[Dict], features2: List[Dict],
+                                        mz_weight: float = 1.0, rt_weight: float = 0.001,
                                         mz_source: str = 'geo_center', rt_source: str = 'geo_center') -> List[Tuple[Dict, Dict]]:
     """
     Match features from file1 to file2 by finding closest neighbors in (m/z, RT) space.
     Each feature in file2 is used only once.
-    
-    Uses weighted Euclidean distance to avoid false matches:
-    - Features with same m/z but very different RT are penalized
-    - Features with similar RT and m/z are preferred
-    
+
+    Uses a weighted Euclidean distance. RT is down-weighted by default (rt_weight << mz_weight,
+    mirroring params.mmf_mz_rt_weight_ratio) because the RT axis spans a much larger range and
+    drifts far more than m/z between runs, so matching is driven mainly by m/z.
+
     Args:
         features1: List of feature dicts from file1, all with same pep_ident
         features2: List of feature dicts from file2, all with same pep_ident
-        mz_weight: Weight for m/z difference in distance calculation
-        rt_weight: Weight for RT difference in distance calculation
+        mz_weight: Weight for the m/z difference in the distance
+        rt_weight: Weight for the RT difference in the distance (small by default; see above)
         mz_source: Which m/z value to use ('geo_center', 'center', or 'start')
         rt_source: Which RT value to use ('geo_center', 'center', or 'start')
     
@@ -636,11 +648,11 @@ def match_features_by_closest_mz_and_rt(features1: List[Dict], features2: List[D
 
 
 
-def compare_files(file1_data: List[Dict], file2_data: List[Dict], 
-                  file1_name: str, file2_name: str, one_to_one_only: bool = False,
-                  mz_source: str = 'geo_center', rt_source: str = 'geo_center') -> Tuple[Dict[float, float], Dict]:
+def compare_files(file1_data: List[Dict], file2_data: List[Dict],
+                  file1_name: str, file2_name: str, one_to_one_only: bool = True,
+                  mz_source: str = 'geo_center', rt_source: str = 'geo_center') -> Tuple[List[Dict], Dict]:
     """
-    Compare two feature files and return RT differences keyed by m/z, plus statistics.
+    Compare two feature files and return a list of matched RT-difference records, plus statistics.
     Matches multiple features with the same pep_ident by closest m/z.
     
     Args:
@@ -657,6 +669,7 @@ def compare_files(file1_data: List[Dict], file2_data: List[Dict],
     file1_by_pep = defaultdict(list)
     file2_by_pep = defaultdict(list)
     
+    #filling filex_by_pep with pep_idents
     for feature in file1_data:
         pep_idents = feature.get('l_raw_pep_ident', [])
         if pep_idents:
@@ -679,7 +692,7 @@ def compare_files(file1_data: List[Dict], file2_data: List[Dict],
     # Find common pep_idents
     common_peps = set(file1_by_pep.keys()) & set(file2_by_pep.keys())
     
-    # Filter to 1:1 matches if requested
+    # Filter to 1:1 matches if requested (default)
     if one_to_one_only:
         common_peps = {pep for pep in common_peps 
                       if len(file1_by_pep[pep]) == 1 and len(file2_by_pep[pep]) == 1}
@@ -688,12 +701,9 @@ def compare_files(file1_data: List[Dict], file2_data: List[Dict],
         print(f"    ⚠ No common pep_idents between {file1_name} and {file2_name}")
         return [], {}
     
-    # Match features by closest m/z for each pep_ident
-    # First, create a dict of single features for m/z collision resolution
+    # Pick one representative feature per pep from file1, then find the minimum m/z decimal
+    # precision that keeps those peptides distinguishable (used to round the display m/z).
     file1_first_per_pep = {pep: file1_by_pep[pep][0] for pep in common_peps}
-    file2_first_per_pep = {pep: file2_by_pep[pep][0] for pep in common_peps}
-    
-    # Resolve m/z collisions
     pep_to_mz = resolve_mz_collisions(file1_first_per_pep, mz_source=mz_source)
     
     # Collect all matched pairs across all pep_idents
@@ -757,16 +767,30 @@ def compare_files(file1_data: List[Dict], file2_data: List[Dict],
 
 
 
-def generate_curve_approximation(model: object, x_values: List[float], method: str = 'polynomial') -> Tuple[List[float], List[float]]:
+# =============================================================================
+# 5. HTML REPORT (PLOTS)
+# Build the interactive Plotly report. create_rt_vs_rtdiff_plot() draws, per file,
+# the raw RT-vs-RT-diff scatter for each other file plus a (re-fitted) correction
+# curve overlay; generate_curve_approximation() samples a model into that curve.
+# This section is display-only and never touches fitted_corrections.json.
+# =============================================================================
+
+# Number of points used to render a fitted curve as a smooth line in the HTML report.
+# This is a display-only resolution — plenty for a smooth line, and independent of the
+# RT magnitude (previously n_points = int(max_x) produced thousands of points and bloated
+# the report by ~50x for no visible benefit).
+CURVE_RENDER_POINTS = 200
+
+
+def generate_curve_approximation(model: object, x_values: List[float], method: str = 'loess') -> Tuple[List[float], List[float]]:
     """
-    Generate curve approximation points from a fitted model.
-    Uses n_points = int(max(x_values)) for approximation count.
-    
+    Sample a fitted model over the x range to draw its curve in the HTML report.
+
     Args:
         model: Fitted model object (poly1d, UnivariateSpline, Rbf, LOESSInterpolator, etc.)
-        x_values: Input x values (used to determine range and point count)
+        x_values: Input x values (used only to determine the min/max range)
         method: Fitting method name for debugging
-    
+
     Returns:
         Tuple of (x_approximation, y_approximation) lists
     """
@@ -774,171 +798,41 @@ def generate_curve_approximation(model: object, x_values: List[float], method: s
         x_array = np.array(x_values)
         min_x = float(np.min(x_array))
         max_x = float(np.max(x_array))
-        n_points = int(max_x)
-        
-        # Ensure at least some points
-        n_points = max(50, n_points)
-        
-        # Generate approximation points
-        x_fit = np.linspace(min_x, max_x, n_points)
+
+        # Fixed render resolution (see CURVE_RENDER_POINTS).
+        x_fit = np.linspace(min_x, max_x, CURVE_RENDER_POINTS)
         y_fit = model(x_fit)
-        
+
         return x_fit.tolist(), y_fit.tolist()
     except Exception as e:
         raise ValueError(f"Failed to generate curve approximation for {method}: {str(e)}")
 
 
-def create_comparison_plot(file1_name: str, comparisons: Dict[str, list], outlier_threshold: float = 0.95, polynomial_degree: int = 8, decimal_points: int = 35, fitting_method: str = 'polynomial', corrections_dict: Dict = None) -> Tuple[go.Figure, Dict[str, str]]:
-    """
-    Create a Plotly figure showing RT differences for one file vs all others.
-    Includes fitted curves for each comparison.
-    
-    Args:
-        file1_name: Base file name
-        comparisons: {file2_name: [{'x': mz, 'y': rt_diff, 'pep_ident': pep_id}, ...]}
-        outlier_threshold: Percentile threshold for outlier exclusion (0.0-1.0).
-                          0.95 = keep central 95% of data, exclude outer 5% (default 0.95).
-                          0 or None = no filtering (keep all data).
-        polynomial_degree: Polynomial degree for fitting (default 8)
-        decimal_points: Decimal places for coefficient formatting (default 35)
-    
-    Returns:
-        Tuple of (Plotly Figure object, {file2_name: equation_string})
-    """
-    fig = go.Figure()
-    equations = {}
-    
-    # Add a trace for each file comparison
-    for file2_name, data_points in sorted(comparisons.items()):
-        if not data_points:
-            continue
-        
-        # Sort by m/z for line plot
-        sorted_data = sorted(data_points, key=lambda d: d['x'])
-        mz_values = [d['x'] for d in sorted_data]
-        rt_diffs = [d['y'] for d in sorted_data]
-        
-        # Create custom hover text with pep_ident
-        hover_text = [
-            f"<b>{file2_name}</b><br>M/Z: {d['x']:.4f}<br>RT Diff: {d['y']:.2f}s<br>Pep ID: {d['pep_ident']}"
-            for d in sorted_data
-        ]
-        
-        # Add data trace
-        fig.add_trace(go.Scatter(
-            x=mz_values,
-            y=rt_diffs,
-            mode='lines+markers',
-            name=f'vs {file2_name}',
-            visible=True,
-            hovertext=hover_text,
-            hoverinfo='text'
-        ))
-        
-        # Fit polynomial and add fitted curve
-        if len(mz_values) >= 3:  # At least 3 points needed for fitting
-            # Calculate percentile-based outlier threshold using IQR method
-            abs_rt_diffs = [abs(d['y']) for d in sorted_data]
-            threshold_value, percentile_used = calculate_percentile_threshold(abs_rt_diffs, outlier_threshold)
-            
-            # Filter out extreme outliers for fitting (but keep all points displayed)
-            filtered_mz = [d['x'] for d in sorted_data if abs(d['y']) <= threshold_value]
-            filtered_rt = [d['y'] for d in sorted_data if abs(d['y']) <= threshold_value]
-            
-            if len(filtered_mz) >= 3:
-                poly, equation, deg = fit_polynomial_equation(filtered_mz, filtered_rt, degree=polynomial_degree, decimal_points=decimal_points)
-                percentile_note = f" ({percentile_used:.1f}% data, outliers excluded)" if percentile_used > 0 else ""
-                equations[file2_name] = f"{equation} <span style='font-size: 0.85em; color: #666;'>(degree {deg}){percentile_note}</span>"
-            else:
-                equations[file2_name] = "<span style='color: #999;'>(Not enough points after filtering)</span>"
-                poly = None
-            
-            # Generate fitted curve points (only if we have a valid polynomial)
-            if poly is not None:
-                x_fit = np.linspace(min(mz_values), max(mz_values), 200)
-                y_fit = poly(x_fit)
-                
-                # Convert numpy arrays to lists for Plotly serialization
-                x_fit_list = x_fit.tolist()
-                y_fit_list = y_fit.tolist()
-                
-                # Add fitted curve trace (more visible: thicker, solid line, bright color)
-                colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#FFA07A', '#98D8C8']
-                color_idx = list(sorted(comparisons.keys())).index(file2_name) % len(colors)
-                
-                fig.add_trace(go.Scatter(
-                    x=x_fit_list,
-                    y=y_fit_list,
-                    mode='lines',
-                    name=f'Fit: {file2_name}',
-                    line=dict(width=4, color=colors[color_idx]),
-                    visible=False,
-                    hoverinfo='skip',
-                    customdata=[f"fit_{file2_name}"] * len(x_fit_list)
-                ))
-    
-    # Update layout
-    fig.update_layout(
-        title={
-            'text': f'Retention Time Alignment – {file1_name}',
-            'x': 0.5,
-            'xanchor': 'center',
-            'font': {'size': 18}
-        },
-        xaxis_title='M/Z (m/z)',
-        yaxis_title='RT Difference (seconds)',
-        hovermode='x unified',
-        height=600,
-        template='plotly_white',
-        font=dict(size=12),
-        legend=dict(
-            title='File Comparisons',
-            yanchor='top',
-            y=0.99,
-            xanchor='right',
-            x=0.99
-        )
-    )
-    
-    return fig, equations
-
-
-def create_rt_vs_rtdiff_plot(file1_name: str, comparisons: Dict[str, list], outlier_threshold: float = 0.95, polynomial_degree: int = 8, decimal_points: int = 35, fitting_method: str = 'polynomial', spline_degree: int = 3, spline_smoothing: float = 100, loess_fraction: float = 0.3, loess_iterations: int = 3, corrections_dict: Dict = None, equations_plain_dict: Dict = None) -> Tuple[go.Figure, Dict[str, str], Dict[str, str]]:
+def create_rt_vs_rtdiff_plot(file1_name: str, comparisons: Dict[str, list], fitted_models: Dict[str, Tuple] = None, fitting_method: str = 'polynomial') -> Tuple[go.Figure, Dict[str, str]]:
     """
     Create a Plotly figure showing RT difference vs RT from file1.
     This reveals if the RT drift is uniform across the LC run or varies by retention time.
     Includes fitted curves for each comparison using the specified fitting method.
     
+    Draws the curves from models fitted in Phase 5; it does not fit anything itself.
+
     Args:
         file1_name: Base file name
         comparisons: {file2_name: [{'x': mz, 'y': rt_diff, 'rt_file1': rt1, 'pep_ident': pep_id}, ...]}
-        outlier_threshold: Percentile threshold for outlier exclusion (0.0-1.0).
-                          0.95 = keep central 95% of data, exclude outer 5% (default 0.95).
-                          0 or None = no filtering (keep all data).
-        polynomial_degree: Polynomial degree for fitting (only used if method='polynomial')
-        decimal_points: Decimal places for coefficient formatting (default 35)
-        fitting_method: Method used for fitting ('polynomial', 'spline', 'rbf', 'loess', 'piecewise')
-        spline_degree: Degree for spline fitting (only used if method='spline', default 3)
-        spline_smoothing: Smoothing factor for splines (only used if method='spline', default 100)
-        loess_fraction: LOESS smoothing fraction (only used if method='loess', default 0.3)
-        loess_iterations: LOESS iterations (only used if method='loess', default 3)
-        corrections_dict: Pre-fitted corrections {'file1': {'file2': {...model_data...}}}
-        equations_plain_dict: Plain-text equations {'file1': {'file2': equation_text}}
-    
+        fitted_models: {file2_name: (model, html_equation, degree)} from Phase 5.
+            A pair is absent when it had too few points to fit; model is None when
+            the fit raised, and html_equation then carries the error text.
+        fitting_method: Method the models were fitted with - selects how the curve
+            is evaluated in generate_curve_approximation()
+
     Returns:
-        Tuple of (Plotly Figure object, {file2_name: equation_string_html}, {file2_name: equation_string_plain})
+        Tuple of (Plotly Figure object, {file2_name: equation_string_html})
     """
     fig = go.Figure()
     equations = {}
-    equations_plain = {}
-    
-    if corrections_dict is None:
-        corrections_dict = {}
-    if equations_plain_dict is None:
-        equations_plain_dict = {}
-    
+
     # Add a trace for each file comparison
-    for file2_name, data_points in sorted(comparisons.items()):
+    for plot_idx, (file2_name, data_points) in enumerate(sorted(comparisons.items())):
         if not data_points:
             continue
         
@@ -964,85 +858,25 @@ def create_rt_vs_rtdiff_plot(file1_name: str, comparisons: Dict[str, list], outl
             hoverinfo='text'
         ))
         
-        # Prepare equation text for button
-        equation_text = None
-        model_obj = None
-        
-        # Try to get pre-fitted model from corrections_dict
-        if file1_name in corrections_dict and file2_name in corrections_dict[file1_name]:
-            correction_data = corrections_dict[file1_name][file2_name]
-            
-            # Get plain-text equation if available
-            if equations_plain_dict and file1_name in equations_plain_dict and file2_name in equations_plain_dict[file1_name]:
-                equation_text = equations_plain_dict[file1_name][file2_name]
-            
-            # Try to deserialize the model
-            try:
-                if fitting_method == 'polynomial' and 'coefficients' in correction_data:
-                    coefficients = correction_data['coefficients']
-                    model_obj = np.poly1d(coefficients)
-                    if not equation_text:
-                        equation_text = f"Polynomial (degree {len(coefficients)-1})"
-                else:
-                    # For other methods, try to deserialize pickled model
-                    if 'model' in correction_data:
-                        model_str = correction_data['model']
-                        if model_str.startswith('pikle:'):
-                            pickling_data = model_str.replace('pikle:', '')
-                            model_obj = pickle.loads(base64.b64decode(pickling_data))
-                        if not equation_text:
-                            equation_text = f"fitted curve for {file2_name}"
-            except Exception as e:
-                pass
-        
-        # If no pre-fitted model, fit one now for backward compatibility
-        if model_obj is None:
-            # Calculate percentile-based outlier threshold using IQR method
-            abs_rt_diffs = [abs(d['y']) for d in sorted_data]
-            threshold_value, percentile_used = calculate_percentile_threshold(abs_rt_diffs, outlier_threshold)
-            
-            # Filter data for fitting
-            filtered_rt = [d['rt_file1'] for d in sorted_data if abs(d['y']) <= threshold_value]
-            filtered_diff = [d['y'] for d in sorted_data if abs(d['y']) <= threshold_value]
-            
-            if len(filtered_rt) >= 3:
-                try:
-                    if fitting_method == 'polynomial':
-                        poly, equation, deg = fit_polynomial_equation(filtered_rt, filtered_diff, degree=polynomial_degree, decimal_points=decimal_points)
-                        _, equation_plain, _ = fit_polynomial_equation_plain(filtered_rt, filtered_diff, degree=polynomial_degree, decimal_points=decimal_points)
-                        model_obj = poly
-                        equation_text = f"{equation} <span style='font-size: 0.85em; color: #666;'>(degree {deg})</span>"
-                    elif fitting_method == 'spline':
-                        model_obj, _, equation_plain = fit_spline_equation(filtered_rt, filtered_diff, smoothing_factor=spline_smoothing, degree=spline_degree, decimal_points=decimal_points)
-                        equation_text = f"fitted curve for {file2_name}"
-                    elif fitting_method == 'rbf':
-                        model_obj, _, equation_plain = fit_rbf_equation(filtered_rt, filtered_diff, rbf_function='multiquadric', epsilon=1.0, decimal_points=decimal_points)
-                        equation_text = f"fitted curve for {file2_name}"
-                    elif fitting_method == 'loess':
-                        model_obj, _, equation_plain = fit_loess_equation(filtered_rt, filtered_diff, smoothing_fraction=loess_fraction, decimal_points=decimal_points)
-                        equation_text = f"fitted curve for {file2_name}"
-                    elif fitting_method == 'piecewise':
-                        model_obj, _, equation_plain = fit_piecewise_polynomial(filtered_rt, filtered_diff, num_segments=5, poly_degree=2, decimal_points=decimal_points)
-                        equation_text = f"fitted curve for {file2_name}"
-                    else:
-                        equation_text = f"(Unknown method: {fitting_method})"
-                        equation_plain = "(Unknown method)"
-                    
-                    equations_plain[file2_name] = equation_plain
-                except Exception as e:
-                    equation_text = f"(Fitting failed: {str(e)})"
-                    equation_plain = f"(Fitting failed: {str(e)})"
-                    equations_plain[file2_name] = equation_plain
-                    model_obj = None
+        # Reuse the model Phase 5 already fitted for this pair. A pair missing from
+        # fitted_models had too few points after outlier filtering to fit.
+        entry = fitted_models.get(file2_name) if fitted_models else None
+
+        if entry is None:
+            model_obj = None
+            equation_text = "<span style='color: #999;'>(Not enough points after filtering)</span>"
+        else:
+            model_obj, html_equation, fitted_degree = entry
+            if model_obj is None:
+                equation_text = html_equation          # carries the fitting error
+            elif fitting_method == 'polynomial':
+                equation_text = f"{html_equation} <span style='font-size: 0.85em; color: #666;'>(degree {fitted_degree})</span>"
             else:
-                equation_text = "<span style='color: #999;'>(Not enough points after filtering)</span>"
-                equation_plain = "(Not enough points after filtering)"
-                equations_plain[file2_name] = equation_plain
-                model_obj = None
-        
+                equation_text = f"fitted curve for {file2_name}"
+
         # Add equation text
         if equation_text:
-            equations[file2_name] = equation_text if isinstance(equation_text, str) else equation_text.decode() if isinstance(equation_text, bytes) else str(equation_text)
+            equations[file2_name] = equation_text
         
         # Generate fitted curve if model is available
         if model_obj is not None:
@@ -1051,8 +885,11 @@ def create_rt_vs_rtdiff_plot(file1_name: str, comparisons: Dict[str, list], outl
                 
                 # Add fitted curve trace (more visible: thicker, solid line, bright color)
                 colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#FFA07A', '#98D8C8']
-                color_idx = list(sorted(comparisons.keys())).index(file2_name) % len(colors)
+                color_idx = plot_idx % len(colors)
                 
+                # Curve starts hidden; the report's equation-toggle JS shows/hides it by
+                # matching this trace's `name`. (No customdata needed — it was 1 repeated
+                # string per point and nothing read it.)
                 fig.add_trace(go.Scatter(
                     x=x_fit,
                     y=y_fit,
@@ -1060,8 +897,7 @@ def create_rt_vs_rtdiff_plot(file1_name: str, comparisons: Dict[str, list], outl
                     name=f'Fit: {file2_name}',
                     line=dict(width=4, color=colors[color_idx]),
                     visible=False,
-                    hoverinfo='skip',
-                    customdata=[f"fit_{file2_name}"] * len(x_fit)
+                    hoverinfo='skip'
                 ))
             except Exception as e:
                 print(f"    Warning: Could not generate curve for {file2_name}: {e}")
@@ -1089,209 +925,22 @@ def create_rt_vs_rtdiff_plot(file1_name: str, comparisons: Dict[str, list], outl
         )
     )
     
-    return fig, equations, equations_plain
+    return fig, equations
 
 
-def create_rt_transformation_plots(file1_name: str, all_files_data: Dict[str, List[Dict]], 
-                                    corrections_dict: Dict[Tuple[str, str], Dict]) -> Dict[str, go.Figure]:
-    """
-    Create transformation plots showing Original RT vs Transformed RT for each file against a reference.
-    
-    For each non-reference file, creates a plot with Original RT (x-axis) vs Transformed RT (y-axis),
-    using the fitted correction model from that file to the reference file.
-    
-    Args:
-        file1_name: Reference file name (usually the first file)
-        all_files_data: {filename: [list of features]}
-        corrections_dict: {(file1, file2): {forward/reverse: fitted_model_data}}
-    
-    Returns:
-        {filename: Plotly Figure} - one figure per non-reference file
-    """
-    transformation_figs = {}
-    
-    # Get all files except reference
-    other_files = [f for f in all_files_data.keys() if f != file1_name]
-    
-    for query_file in other_files:
-        fig = go.Figure()
-        
-        # Get the correction model from query_file to reference (file1_name)
-        correction_key = (query_file, file1_name)
-        
-        if correction_key not in corrections_dict:
-            # Try reverse direction
-            correction_key = (file1_name, query_file)
-            if correction_key not in corrections_dict:
-                print(f"  ⚠ No correction model found for {query_file} → {file1_name}")
-                continue
-            # Use reverse direction (need to negate the correction)
-            use_reverse = True
-        else:
-            use_reverse = False
-        
-        correction_data = corrections_dict[correction_key]
-        
-        # Determine the direction to use
-        if use_reverse:
-            model_data = correction_data.get('reverse', {})
-        else:
-            model_data = correction_data.get('forward', {})
-        
-        if not model_data or 'model_pickle' not in model_data:
-            print(f"  ⚠ No fitted model in correction data for {query_file} → {file1_name}")
-            continue
-        
-        # Unpickle the model
-        try:
-            model_b64 = model_data.get('model_pickle', '')
-            model_bytes = base64.b64decode(model_b64.encode('utf-8'))
-            model = pickle.loads(model_bytes)
-        except Exception as e:
-            print(f"  ✗ Failed to load model for {query_file}: {e}")
-            continue
-        
-        # Get features from query file
-        features = all_files_data.get(query_file, [])
-        if not features:
-            continue
-        
-        # Extract original RT values
-        original_rts = []
-        for feature in features:
-            if 'y_center' in feature:
-                original_rts.append(feature['y_center'])
-        
-        if not original_rts:
-            continue
-        
-        original_rts = np.array(original_rts)
-        
-        # Apply correction to get transformed RTs
-        try:
-            if use_reverse:
-                # Negate for reverse direction
-                transformed_rts = original_rts - model(original_rts)
-            else:
-                transformed_rts = original_rts + model(original_rts)
-        except Exception as e:
-            print(f"  ✗ Failed to apply correction model for {query_file}: {e}")
-            continue
-        
-        # Add scatter plot
-        fig.add_trace(go.Scatter(
-            x=original_rts,
-            y=transformed_rts,
-            mode='markers',
-            name=f'{query_file} → {file1_name}',
-            marker=dict(
-                size=6,
-                opacity=0.6,
-                line=dict(width=0.5, color='white')
-            ),
-            hovertemplate='<b>Original RT:</b> %{x:.2f}<br>' +
-                         '<b>Transformed RT:</b> %{y:.2f}<br>' +
-                         '<b>Δ RT:</b> %{customdata:.2f}<extra></extra>',
-            customdata=transformed_rts - original_rts
-        ))
-        
-        # Add perfect alignment line (y=x)
-        rt_min, rt_max = original_rts.min(), original_rts.max()
-        fig.add_trace(go.Scatter(
-            x=[rt_min, rt_max],
-            y=[rt_min, rt_max],
-            mode='lines',
-            name='Perfect Alignment (y=x)',
-            line=dict(dash='dash', color='gray', width=2),
-            hoverinfo='skip',
-            showlegend=True,
-            visible=True
-        ))
-        
-        # Update layout
-        fig.update_layout(
-            title=f'RT Transformation: {query_file} → Reference ({file1_name})',
-            xaxis_title='Original RT (query file)',
-            yaxis_title='Transformed RT (after correction)',
-            hovermode='closest',
-            width=900,
-            height=600,
-            template='plotly_white',
-            font=dict(size=12),
-            legend=dict(
-                yanchor='top',
-                y=0.99,
-                xanchor='left',
-                x=0.01
-            )
-        )
-        
-        # Make axes equal for better visualization
-        fig.update_xaxes(scaleanchor='y', scaleratio=1)
-        fig.update_yaxes(scaleanchor='x', scaleratio=1)
-        
-        transformation_figs[query_file] = fig
-    
-    return transformation_figs
+# =============================================================================
+# 6. CORRECTIONS EXPORT (JSON)
+# Write the fitted per-pair correction models to disk. This is the pipeline-consumed
+# artifact: the pairing step reads it back to RT-align features before pairing.
+# =============================================================================
 
-
-def serialize_model_to_json(method: str, model: object, x_vals: np.ndarray, y_vals: np.ndarray, 
-                           fit_params: Dict[str, any]) -> Dict[str, any]:
-    """
-    Serialize a fitted model to JSON-compatible format.
-    
-    Args:
-        method: Fitting method name ('polynomial', 'spline', 'loess', 'rbf', 'piecewise')
-        model: The fitted model object
-        x_vals: Original X values used for fitting
-        y_vals: Original Y values used for fitting
-        fit_params: Additional parameters specific to the method
-    
-    Returns:
-        Dictionary with 'method', 'serialization', and 'metadata' keys
-    """
-    serialization_data = {
-        'method': method,
-        'metadata': {
-            'n_points': len(x_vals),
-            'x_min': float(np.min(x_vals)),
-            'x_max': float(np.max(x_vals)),
-            'y_min': float(np.min(y_vals)),
-            'y_max': float(np.max(y_vals)),
-            'fit_params': fit_params
-        }
-    }
-    
-    if method == 'polynomial':
-        # Polynomial coefficients are simple floats
-        serialization_data['coefficients'] = [float(c) for c in model.coefficients]
-        serialization_data['degree'] = int(model.order)
-    
-    elif method == 'spline':
-        # UnivariateSpline: serialize knots and coefficients
-        knots = model.get_knots().tolist()
-        coeffs = model.get_coeffs().tolist()
-        serialization_data['knots'] = knots
-        serialization_data['coefficients'] = coeffs
-        serialization_data['degree'] = int(model.k)
-    
-    elif method in ['loess', 'rbf', 'piecewise']:
-        # For complex methods, serialize the model as base64-encoded pickle
-        import pickle
-        import base64
-        model_bytes = pickle.dumps(model)
-        serialization_data['model_pickle'] = base64.b64encode(model_bytes).decode('utf-8')
-    
-    return serialization_data
-
-
-def export_fitted_corrections_json(corrections_dict: Dict[str, Dict[str, any]], 
+def export_fitted_corrections_json(corrections_dict: Dict[str, Dict[str, Any]],
                                   output_path: str, fitting_method: str):
     """
     Export all fitted corrections to JSON file.
-    
+
     Args:
-        corrections_dict: Dict[file_pair_name][direction] = serialized_model_dict
+        corrections_dict: {file_pair_name: correction_record} (record holds method + serialization)
         output_path: Path to output JSON file
         fitting_method: Name of fitting method used
     """
@@ -1310,7 +959,16 @@ def export_fitted_corrections_json(corrections_dict: Dict[str, Dict[str, any]],
     print(f"✓ Exported corrections to: {output_path}")
 
 
+# =============================================================================
+# 7. ENTRY POINT / ORCHESTRATION
+# Parse args, load all feature files, compare every ordered file pair, fit the
+# correction models, write fitted_corrections.json, and render the HTML report.
+# =============================================================================
+
 def main():
+    # ----- Phase 1: parse CLI arguments -----
+    # Defaults here are the standalone defaults; the .nf overrides most of them
+    # explicitly (e.g. --fitting_method loess, --mz_source/--rt_source start).
     parser = argparse.ArgumentParser(
         description='Compare retention time alignment across multiple feature files'
     )
@@ -1322,22 +980,22 @@ def main():
                        help='Output HTML report file')
     parser.add_argument('--output_json', default='results/feature_analysis/rt_alignment_comparison/fitted_corrections.json',
                        help='Output JSON file with fitted corrections (default: results/feature_analysis/rt_alignment_comparison/fitted_corrections.json)')
-    parser.add_argument('--fitting_method', default='polynomial', 
+    parser.add_argument('--fitting_method', default='loess', 
                        choices=['polynomial', 'spline', 'loess', 'rbf', 'piecewise'],
                        help='Method for fitting RT correction curves (default: polynomial)')
     parser.add_argument('--outlier_threshold', type=float, default=0.95,
-                       help='Percentile threshold for outlier exclusion (0.0-1.0). 0.95 = keep central 95%% of data, exclude outer 5%% (default: 0.95). Set to 0 to disable filtering.')
+                       help='Percentile threshold for outlier exclusion (0.0-1.0). 0.95 = keep central 95%% of data, exclude outer 5%% (default: 0.95). Set to 0 to disable filtering. Best set between 0.95-0.99 depending on data quality (lower RT shift -> higher value).')
     parser.add_argument('--one_to_one_only', action='store_true',
-                       help='Only include pep_idents that appear exactly once in both files')
+                       help='Only include pep_idents that appear exactly once in both files. True by default. Strongly advised to set True - only set to False if measurement has very few (>200) pep_idents')
     parser.add_argument('--mz_source', default='geo_center', choices=['geo_center', 'center', 'start'],
                        help='Which m/z value to use: geo_center (default), center, or start')
     parser.add_argument('--rt_source', default='geo_center', choices=['geo_center', 'center', 'start'],
                        help='Which RT value to use: geo_center (default), center, or start')
     parser.add_argument('--polynomial_degree', type=int, default=8,
                        help='Polynomial degree for fitting RT correction curves (default: 8)')
-    parser.add_argument('--spline_degree', type=int, default=8,
-                       help='Spline degree for curve fitting (default: 3, used with spline method)')
-    parser.add_argument('--spline_smoothing', type=float, default=1000,
+    parser.add_argument('--spline_degree', type=int, default=3,
+                       help='Spline degree for curve fitting (default: 3, used with spline method; UnivariateSpline requires 1-5)')
+    parser.add_argument('--spline_smoothing', type=float, default=100,
                        help='Smoothing factor for splines (default: 100, used with spline method)')
     parser.add_argument('--loess_fraction', type=float, default=0.3,
                        help='LOESS smoothing fraction - proportion of data for local regression (default: 0.3, range 0.01-1.0)')
@@ -1345,12 +1003,10 @@ def main():
                        help='LOESS iterations for robustness (default: 3)')
     parser.add_argument('--decimal_points', type=int, default=35,
                        help='Decimal places for polynomial coefficients (default: 35)')
-    parser.add_argument('--show-plots', action='store_true',
-                       help='Display plots interactively in browser during execution (requires browser access)')
-    
+
     args = parser.parse_args()
-    
-    # Find all feature data files
+
+    # ----- Phase 2: discover feature-data files -----
     if not os.path.isdir(args.input_dir):
         print(f"✗ Input directory not found: {args.input_dir}")
         return
@@ -1367,9 +1023,10 @@ def main():
     print(f"{'='*70}")
     print(f"Found {len(json_files)} feature data files\n")
     
-    # Load all files - use REAL FILENAMES as keys, NOT basenames
+    # ----- Phase 3: load features -----
+    # Key file_data by the REAL filename (read from each feature's 'filename' field),
+    # not the on-disk basename, so downstream keys/labels match the rest of the pipeline.
     file_data = {}
-    file_mapping = {}  # Maps basename to real filename
     for filepath in json_files:
         basename = os.path.basename(filepath).replace('_feature_data.json', '')
         print(f"Loading {basename}...", end='', flush=True)
@@ -1385,13 +1042,10 @@ def main():
             
             # Use REAL FILENAME as the dictionary key (not basename)
             file_data[real_filename] = data
-            file_mapping[basename] = real_filename
             print(f" ✓ ({len(data)} features, real name: '{real_filename}')", flush=True)
         else:
             print(f" ✗", flush=True)
-    
-    print(f"\nFile mapping (JSON basename → real filename): {file_mapping}\n", flush=True)
-    
+
     if len(file_data) < 2:
         print(f"\n✗ Need at least 2 files for comparison")
         return
@@ -1400,7 +1054,10 @@ def main():
     print(f"Comparing files ({len(file_data)} files, {len(file_data)*(len(file_data)-1)//2} pairs)")
     print(f"{'='*70}\n")
     
-    # Create comparisons: base_file -> {comparison_file: {mz: rt_diff}}
+    # ----- Phase 4: compare every ordered file pair -----
+    # For each file1, match features against every other file2 and collect the RT
+    # differences. Ordered pairs (both directions), so a file is never compared to itself.
+    # all_comparisons: file1 -> {file2: [ {x, y=rt_diff, rt_file1, pep_ident}, ... ]}
     all_comparisons = {}
     all_stats = {}  # Store statistics for each comparison
     
@@ -1427,86 +1084,47 @@ def main():
         all_comparisons[file1_name] = comparisons
         all_stats[file1_name] = stats_dict
     
-    # Fit RT corrections using specified method
+    # ----- Phase 5: fit correction models -----
+    # ONE fit per ordered file pair. The fitted model is then reused for all three
+    # things that need it: the plain-text equation stored in the JSON, the pickled
+    # payload the pairing step consumes, and the curve drawn in the HTML report
+    # (handed to create_rt_vs_rtdiff_plot below via fitted_models).
+    #
+    # All models fit RT-vs-RT-difference on the outlier-filtered points.
     print(f"\n{'='*70}")
     print(f"Fitting RT corrections ({args.fitting_method} method)...")
     print(f"{'='*70}\n")
-    
-    # First, generate the RT vs RT-diff equations (these will be reused in the corrections)
-    print(f"Generating RT drift pattern equations...")
-    all_equations_plain = {}  # {file1_name: {file2_name: equation_string}}
-    
+
+    corrections_dict = {}   # "{file1}_vs_{file2}" -> record written to the JSON
+    fitted_models = {}      # {file1_name: {file2_name: (model, html_equation, degree)}}
+
     for file1_name in sorted(all_comparisons.keys()):
         comparisons = all_comparisons[file1_name]
-        equations_plain_for_file = {}
-        
-        for file2_name, data_points in sorted(comparisons.items()):
-            if not data_points or len(data_points) < 3:
-                continue
-            
-            # Extract RT and RT-diff for this comparison
-            rt_values = [d['rt_file1'] for d in data_points]
-            rt_diffs = [d['y'] for d in data_points]
-            
-            # Filter by percentile-based outlier threshold
-            abs_rt_diffs = [abs(d['y']) for d in data_points]
-            threshold_value, percentile_used = calculate_percentile_threshold(abs_rt_diffs, args.outlier_threshold)
-            filtered_rt = [d['rt_file1'] for d in data_points if abs(d['y']) <= threshold_value]
-            filtered_diff = [d['y'] for d in data_points if abs(d['y']) <= threshold_value]
-            
-            if len(filtered_rt) >= 3:
-                try:
-                    # Generate equation for RT vs RT-diff using the same method as the corrections
-                    if args.fitting_method == 'polynomial':
-                        _, equation_plain, _ = fit_polynomial_equation_plain(filtered_rt, filtered_diff, degree=args.polynomial_degree, decimal_points=args.decimal_points)
-                    elif args.fitting_method == 'spline':
-                        _, _, equation_plain = fit_spline_equation(filtered_rt, filtered_diff, smoothing_factor=args.spline_smoothing, degree=args.spline_degree, decimal_points=args.decimal_points)
-                    elif args.fitting_method == 'loess':
-                        _, _, equation_plain = fit_loess_equation(filtered_rt, filtered_diff, smoothing_fraction=args.loess_fraction, decimal_points=args.decimal_points)
-                    elif args.fitting_method == 'rbf':
-                        _, _, equation_plain = fit_rbf_equation(filtered_rt, filtered_diff, rbf_function='multiquadric', epsilon=1.0, decimal_points=args.decimal_points)
-                    elif args.fitting_method == 'piecewise':
-                        _, _, equation_plain = fit_piecewise_polynomial(filtered_rt, filtered_diff, num_segments=5, poly_degree=2, decimal_points=args.decimal_points)
-                    else:
-                        equation_plain = f"(Unknown method: {args.fitting_method})"
-                    equations_plain_for_file[file2_name] = equation_plain
-                except Exception as e:
-                    equations_plain_for_file[file2_name] = f"(Fitting failed: {str(e)})"
-        
-        all_equations_plain[file1_name] = equations_plain_for_file
-    
-    print(f"  ✓ Generated {sum(len(v) for v in all_equations_plain.values())} equations\n")
-    
-    # Now fit corrections using the pre-generated equations
-    corrections_dict = {}  # Store corrections for JSON export
-    
-    for file1_name in sorted(all_comparisons.keys()):
-        comparisons = all_comparisons[file1_name]
-        
+        models_for_file = {}
+
         for file2_name, data_points in sorted(comparisons.items()):
             if not data_points:
                 continue
-            
-            # Extract RT (x-axis for drift pattern) and RT diff (y-axis) from data points
-            x_values = [d['rt_file1'] for d in data_points]  # RT from file 1 (for drift pattern equation)
-            y_values = [d['y'] for d in data_points]  # RT difference
-            
-            # Filter by percentile-based outlier threshold for fitting
+
+            # x = RT in the reference file, y = RT difference to the query file
+            y_values = [d['y'] for d in data_points]
+
+            # Drop outliers by percentile before fitting, so a few bad matches
+            # cannot drag the correction curve.
             abs_y_values = [abs(y) for y in y_values]
-            threshold_value, percentile_used = calculate_percentile_threshold(abs_y_values, args.outlier_threshold)
+            threshold_value, _ = calculate_percentile_threshold(abs_y_values, args.outlier_threshold)
             filtered_pairs = [(d['rt_file1'], d['y']) for d in data_points if abs(d['y']) <= threshold_value]
-            
+
             if len(filtered_pairs) < 3:
                 print(f"  Skipping {file1_name} → {file2_name}: insufficient data after filtering")
                 continue
-            
+
             filtered_x = [p[0] for p in filtered_pairs]
             filtered_y = [p[1] for p in filtered_pairs]
-            
+
             try:
                 print(f"  Fitting {file1_name} → {file2_name}...", end='', flush=True)
-                
-                # Fit model using specified method
+
                 model, html_eq, plain_eq, serialization_data = fit_retention_time_model(
                     filtered_x, filtered_y,
                     fitting_method=args.fitting_method,
@@ -1517,31 +1135,35 @@ def main():
                     loess_iterations=args.loess_iterations,
                     decimal_points=args.decimal_points
                 )
-                
-                # Get the pre-generated equation (RT vs RT-diff, not M/Z vs RT-diff)
-                equation_to_save = all_equations_plain.get(file1_name, {}).get(file2_name, plain_eq)
-                
-                # Store correction in dict
+
+                # (model, html label, degree) - degree is only set for polynomial
+                models_for_file[file2_name] = (model, html_eq, serialization_data.get('degree'))
+
+                # Only 'method' + 'serialization' are consumed downstream (by pairing);
+                # the other fields are inspection-only metadata.
                 pair_key = f"{file1_name}_vs_{file2_name}"
                 corrections_dict[pair_key] = {
                     'method': args.fitting_method,
-                    'direction': 'forward',
-                    'file1': file_mapping.get(file1_name, file1_name),
-                    'file2': file_mapping.get(file2_name, file2_name),
+                    'file1': file1_name,
+                    'file2': file2_name,
                     'n_points': len(data_points),
                     'n_points_fitted': len(filtered_pairs),
                     'n_points_filtered': len(data_points) - len(filtered_pairs),
                     'serialization': serialization_data,
-                    'equation': equation_to_save
+                    'equation': plain_eq
                 }
-                
+
                 print(f" ✓ ({len(filtered_pairs)}/{len(data_points)} points)")
-                
+
             except Exception as e:
                 print(f" ✗ (Error: {str(e)})")
-    
-    # Export corrections to JSON if output_json parameter is specified
-    # Always write JSON (even if empty) to ensure file exists and is valid
+                models_for_file[file2_name] = (None, f"(Fitting failed: {str(e)})", None)
+
+        fitted_models[file1_name] = models_for_file
+
+    # ----- Phase 6: export corrections JSON (the pipeline-consumed artifact) -----
+    # Always write the file (even with zero corrections) so the downstream path() input
+    # in the .nf stays valid.
     if args.output_json:
         try:
             if corrections_dict:
@@ -1563,70 +1185,41 @@ def main():
         except Exception as e:
             print(f"⚠ Failed to export corrections JSON: {e}")
     
-    # Create HTML report with plots
+    # ----- Phase 7: render the HTML report (display-only) -----
+    # Build one drift-pattern figure per file, then assemble them (with a stats table
+    # and the fitted-equation toggles) into a single self-contained HTML page.
     print(f"\n{'='*70}")
     print(f"Generating HTML report...")
     print(f"{'='*70}\n")
-    
+
     figures = []
-    all_equations = {}  # Store equations for each plot
-    
-    # Create RT vs RT-diff plots (drift patterns) with fitted curves
-    # Note: corrections_dict and all_equations_plain are already populated above
+
+    # Build one drift-pattern figure (RT vs RT-diff, with fitted-curve overlays) per file
     for file1_name in sorted(all_comparisons.keys()):
         comparisons = all_comparisons[file1_name]
         if comparisons:
-            fig, equations, equations_plain = create_rt_vs_rtdiff_plot(
-                file1_name, comparisons, 
-                outlier_threshold=args.outlier_threshold, 
-                polynomial_degree=args.polynomial_degree, 
-                decimal_points=args.decimal_points,
-                fitting_method=args.fitting_method,
-                spline_degree=args.spline_degree,
-                spline_smoothing=args.spline_smoothing,
-                loess_fraction=args.loess_fraction,
-                loess_iterations=args.loess_iterations,
-                corrections_dict=corrections_dict,
-                equations_plain_dict=all_equations_plain
+            fig, equations = create_rt_vs_rtdiff_plot(
+                file1_name, comparisons,
+                fitted_models=fitted_models.get(file1_name),
+                fitting_method=args.fitting_method
             )
-            mapped_file1_name = file_mapping.get(file1_name, file1_name)
-            
-            # Remap equations dict keys to use real filenames instead of basenames
-            remapped_equations = {}
-            for file2_name, equation in equations.items():
-                mapped_file2_name = file_mapping.get(file2_name, file2_name)
-                remapped_equations[mapped_file2_name] = equation
-            
-            figures.append((fig, f'RT Drift Pattern – {mapped_file1_name}', remapped_equations))
-            all_equations[f'RT Drift Pattern – {mapped_file1_name}'] = remapped_equations
-    
+            figures.append((fig, f'RT Drift Pattern – {file1_name}', equations))
+
     if not figures:
         print("✗ No valid comparisons to plot")
         return
     
-    # Display plots interactively if requested
-    if args.show_plots:
-        print(f"\n{'='*70}")
-        print(f"Displaying plots interactively ({len(figures)} plots)...")
-        print(f"{'='*70}")
-        print(f"Each plot will open in your default browser. Close the browser tab to continue to the next plot.\n")
-        
-        for i, (fig, title, equations) in enumerate(figures, 1):
-            print(f"Opening plot {i}/{len(figures)}: {title}")
-            try:
-                fig.show()
-                print(f"  ✓ Plot {i} displayed\n")
-            except Exception as e:
-                print(f"  ✗ Failed to display plot {i}: {e}\n")
-    
-    # Create HTML report with all figures
+    # Assemble the final HTML page. Below: the page shell + header/config info-box
+    # (this f-string), then the stats table, then each figure with its equation
+    # toggles, then the closing JS that wires the toggles to Plotly. Local vars here
+    # are just short aliases used inside the f-string.
     outlier_threshold = args.outlier_threshold
     outlier_threshold_percent = outlier_threshold * 100.0 if outlier_threshold > 0 else 0.0
     outlier_threshold_display = f"{outlier_threshold_percent:.1f}th percentile" if outlier_threshold > 0 else "No filtering"
     mz_source = args.mz_source
     rt_source = args.rt_source
     one_to_one_only = args.one_to_one_only
-    
+
     html_content = f"""
     <!DOCTYPE html>
     <html>
@@ -1762,7 +1355,7 @@ def main():
             <div class="info-box" style="background: #F0F8FF; border-left-color: #4169E1;">
                 <p><strong>Analysis Configuration:</strong></p>
                 <p>Outlier threshold: <code>{outlier_threshold_display}</code></p>
-                <p style="font-size: 0.9em; color: #666; margin-top: 8px;">Using percentile-based outlier detection (IQR method). Points outside the {outlier_threshold_percent:.1f}% central range are excluded from fitting but remain visible in plots.</p>
+                <p style="font-size: 0.9em; color: #666; margin-top: 8px;">Using percentile-based outlier detection. Points outside the {outlier_threshold_percent:.1f}% central range are excluded from fitting but remain visible in plots.</p>
                 <p style="margin-top: 12px; padding-top: 12px; border-top: 1px solid #ddd;"><strong>Coordinate Sources:</strong> M/Z = <code>{mz_source}</code>, RT = <code>{rt_source}</code></p>
                 {f'<p style="margin-top: 12px;"><strong>Pep ID Filtering:</strong> Only 1:1 matches used (pep_idents appearing exactly once in both files)</p>' if one_to_one_only else ''}
             </div>
@@ -1814,15 +1407,11 @@ def main():
             num_matches = stats['num_matches']
             mean_rt = stats['mean_rt_diff']
             std_rt = stats['std_rt_diff']
-            
-            # Use mapped filenames for display
-            mapped_file1_name = file_mapping.get(file1_name, file1_name)
-            mapped_file2_name = file_mapping.get(file2_name, file2_name)
-            
+
             html_content += f"""
                         <tr>
-                            <td><strong>{mapped_file1_name}</strong></td>
-                            <td><strong>{mapped_file2_name}</strong></td>
+                            <td><strong>{file1_name}</strong></td>
+                            <td><strong>{file2_name}</strong></td>
                             <td style="text-align: center;">{num_matches}</td>
                             <td style="text-align: right;">{mean_rt:.2f}</td>
                             <td style="text-align: right;">{std_rt:.2f}</td>
@@ -1973,9 +1562,7 @@ def main():
     print(f"  File comparisons: {total_comparisons}")
     print(f"  Total matches: {total_matches}")
     print(f"  Plots generated: {len(figures)}")
-    if args.show_plots:
-        print(f"  Interactive display: ENABLED (plots were shown)")
-    print(f"  Outlier threshold: {args.outlier_threshold} seconds")
+    print(f"  Outlier threshold: {args.outlier_threshold} (fraction of central data kept)")
     if args.one_to_one_only:
         print(f"  1:1 pep_ident filter: ENABLED (only pep_idents appearing once in both files)")
 

@@ -2,9 +2,9 @@
 nextflow.enable.dsl=2
 
 // Required Parameters (Input-Files)
-params.main_fasta_file = "files/ProteoBenchFASTA_MixedSpecies_HYE.fasta" // The FASTA file of the species to be searched (downloadable from UniProtKB)
+params.main_fasta_file = "files/uniprotkb_proteome_UP000000589_2026_07_22_Mouse_spike-ins.fasta" // The FASTA file of the species to be searched (downloadable from UniProtKB)
 params.main_raw_files_folder = "/workspaces/unbeQuant/files/raws_mounted"  // The folder where the RAW/.d-files are located.
-params.main_comet_params = "/workspaces/unbeQuant/example_configurations/comet_config.txt"  // The comet parameter file for search. NOTE: Here the digestion should be explicitly turned on (or set appropiately, depending on the input FASTA.)).
+params.main_comet_params = "/workspaces/unbeQuant/example_configurations/comet_config_mouse.txt"  // The comet parameter file for search. NOTE: Here the digestion should be explicitly turned on (or set appropiately, depending on the input FASTA.)).
 
 // Optional Parameters
 // See each nextflow script for detailed parameter documentation.
@@ -123,12 +123,29 @@ workflow main_unbequant {
             convert_to_mzml.out,
             final_grouped_results
         )
+        // Barrier: only start feature mapping once the ENTIRE quantify_and_align
+        // subworkflow has finished. Collecting the mix of every quantify_and_align
+        // output channel (data emits out[0..2] plus the terminal report/plot branches
+        // out[3..5]) yields a single emission that fires only after all of its
+        // processes have completed, so nothing from quantify_and_align runs
+        // concurrently with the memory-heavy mapping stage below.
+        qal_done = quantify_and_align.out[0]
+            .mix(
+                quantify_and_align.out[1],
+                quantify_and_align.out[2],
+                quantify_and_align.out[3],
+                quantify_and_align.out[4],
+                quantify_and_align.out[5]
+            )
+            .collect()
+
         // Map mzML features with identification data
         mzml_files = convert_to_mzml.out.collect().flatten()
         tsv_files = quantify_and_align.out[1]
             .map { fdr, consensus_xml, feature_tsvs -> feature_tsvs }
-            .collect()
             .flatten()
+            .combine(qal_done)   // gate: hold every tsv until the whole subworkflow is done
+            .map { it[0] }       // combine prepends the tsv path; drop the barrier payload
 
         if (params.main_use_clusterless) {
             // Clusterless iterative component building (default)

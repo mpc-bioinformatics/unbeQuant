@@ -63,6 +63,10 @@ _CTERM_MOD_MASSES: Dict[str, float] = {
 
 _H2O_MASS = 18.010565  # H (1.007825) + OH (17.002740)
 
+# Caps for the split-pep_ident listing, so the HTML stays a readable size
+_MAX_SPLIT_ROWS = 500       # rows in the full split-pep_ident table
+_MAX_SPLIT_IDS_SHOWN = 12   # component IDs printed per row
+
 
 def compute_monoisotopic_mass(sequence: str,
                               nterm_mod: str = 'none',
@@ -142,6 +146,221 @@ def build_raw_pep_ident_lookup(tsv_paths: List[str]) -> Dict[Tuple[str, str], Li
     return lookup
 
 
+def _resolve_raw_seq(clean: str, raw_seqs: List[str]) -> str:
+    """Return the raw (modified) form of a clean sequence, or the clean seq itself.
+
+    Matches a clean pep_ident back to its raw counterpart (e.g. M[15.9949]) by
+    stripping bracket modifications from each raw candidate.
+    """
+    for raw_seq in raw_seqs:
+        stripped = ''.join(c for c in raw_seq if c.isalpha()) if '[' in raw_seq else raw_seq
+        if stripped.upper() == clean.upper():
+            return raw_seq
+    return clean
+
+
+def load_spikeins(fasta_path: Optional[str]) -> Dict[str, Dict[str, str]]:
+    """Parse a FASTA file of spike-in proteins.
+
+    Returns {accession: {'name': entry_name, 'description': display_string}} keyed
+    by UniProt accession (e.g. 'P37840'). The display string is formatted like
+    'P37840|SYUA_HUMAN Alpha-synuclein OS=Homo sapiens' (technical GN=/PE=/SV=
+    suffixes trimmed). Returns an empty dict if the path is missing/unreadable.
+    """
+    spikes: Dict[str, Dict[str, str]] = {}
+    if not fasta_path or not os.path.exists(fasta_path):
+        return spikes
+    try:
+        with open(fasta_path) as fh:
+            for line in fh:
+                if not line.startswith('>'):
+                    continue
+                header = line[1:].strip()
+                parts = header.split('|')
+                if len(parts) >= 3:
+                    # e.g. sp|P37840|SYUA_HUMAN Alpha-synuclein OS=... (may have extra |)
+                    accession = parts[1].strip()
+                    rest = '|'.join(parts[2:]).strip()
+                else:
+                    # Fallback: 'P37840 description...'
+                    toks = header.split(None, 1)
+                    accession = toks[0].strip()
+                    rest = toks[1].strip() if len(toks) > 1 else ''
+                if not accession:
+                    continue
+                name = rest.split(None, 1)[0] if rest else accession
+                desc_body = rest
+                for marker in (' GN=', ' PE=', ' SV='):
+                    idx = desc_body.find(marker)
+                    if idx != -1:
+                        desc_body = desc_body[:idx]
+                description = f"{accession}|{desc_body}".strip().rstrip('|')
+                spikes[accession] = {'name': name, 'description': description}
+    except OSError:
+        pass
+    return spikes
+
+
+def analyze_spikeins(components: List[Dict],
+                     spikeins: Dict[str, Dict[str, str]],
+                     nterm_mod: str = 'none',
+                     cys_mod: str = 'none',
+                     cterm_mod: str = 'none',
+                     raw_pep_ident_lookup: Optional[Dict[Tuple[str, str], List[str]]] = None) -> Dict:
+    """Locate spike-in features across components by matching vertex prot_idents.
+
+    A "feature" is a vertex whose SOLE protein identification is a spike-in: its
+    prot_ident must contain exactly one distinct accession, and that accession
+    must be a spike-in. Features carrying more than one prot_ident are excluded,
+    since those are shared/ambiguous peptides that could originate from non
+    spike-in proteins — only spike-in-unique peptides are counted.
+    For each spike-in found, collects its features (sequence(s), monoisotopic mass,
+    charge, component id), sorts them so features sharing a component are adjacent,
+    and colour-codes those shared components. Also derives per-protein coverage
+    metrics: file coverage, sequences split across multiple components, and mean
+    size of the components the protein occupies.
+
+    Returns:
+        {
+          'total_spike_features': int,
+          'total_files': int,
+          'spikes': [ {accession, name, description, num_features,
+                       num_components, num_shared_components,
+                       num_files, pct_files,
+                       num_sequences, num_split_sequences, pct_split_sequences,
+                       avg_component_size, features: [...]} ],
+          'spikes_not_found': [ (accession, description), ... ],
+        }
+    """
+    result = {
+        'total_spike_features': 0,
+        'total_files': 0,
+        'spikes': [],
+        'spikes_not_found': [],
+    }
+    if not spikeins:
+        return result
+
+    # Light, visually distinct backgrounds for shared-component grouping.
+    palette = ['#fdebd0', '#d6eaf8', '#d5f5e3', '#fadbd8', '#e8daef',
+               '#d1f2eb', '#fcf3cf', '#f6ddcc', '#ebdef0', '#d4efdf']
+
+    found: Dict[str, List[Dict]] = {acc: [] for acc in spikeins}
+    all_files: set = set()
+
+    for comp in components:
+        comp_id = comp.get('component_id', 'unknown')
+        cycle = comp.get('cycle')
+        comp_size = comp.get('num_vertices') or len(comp.get('vertices', []))
+        for v in comp.get('vertices', []):
+            fname = v.get('filename', '')
+            if fname:
+                all_files.add(fname)
+
+            v_prots = v.get('prot_ident') or []
+            if isinstance(v_prots, str):
+                v_prots = [v_prots]
+            # Keep only features whose SOLE protein identification is a spike-in.
+            # A feature with more than one distinct prot_ident is an ambiguous
+            # peptide that may come from a non-spike-in protein, so it is excluded
+            # — we count only peptides unique to a single spike-in.
+            distinct_prots = {p for p in v_prots if p}
+            if len(distinct_prots) != 1:
+                continue
+            acc = next(iter(distinct_prots))
+            if acc not in spikeins:
+                continue
+            matched = [acc]
+
+            pids = v.get('pep_ident') or []
+            if isinstance(pids, str):
+                pids = [pids]
+            pids = [p for p in pids if p]
+
+            raw_seqs = []
+            if raw_pep_ident_lookup:
+                raw_seqs = raw_pep_ident_lookup.get((fname, v.get('openms_fid', '')), [])
+
+            seq_mass = []
+            for clean in pids:
+                raw = _resolve_raw_seq(clean, raw_seqs)
+                mass = compute_monoisotopic_mass(raw, nterm_mod, cys_mod, cterm_mod)
+                seq_mass.append((clean, raw, mass))
+
+            feature = {
+                'component_id': comp_id,
+                'component_size': comp_size,
+                'cycle': cycle,
+                'charge': v.get('charge'),
+                'filename': fname,
+                'mz': v.get('x_center'),   # x_center is the feature m/z
+                'rt': v.get('y_center'),   # y_center is the retention time
+                'seq_mass': seq_mass,  # list of (clean, raw, mass)
+            }
+            for acc in matched:
+                found[acc].append(feature)
+
+    total_files = len(all_files)
+    total = 0
+    for acc, feats in found.items():
+        info = spikeins[acc]
+        if not feats:
+            result['spikes_not_found'].append((acc, info['description']))
+            continue
+        total += len(feats)
+
+        # Sort so features from the same component sit on adjacent rows.
+        feats_sorted = sorted(feats, key=lambda f: str(f['component_id']))
+        comp_counts = Counter(str(f['component_id']) for f in feats_sorted)
+        shared = sorted(cid for cid, n in comp_counts.items() if n > 1)
+        color_map = {cid: palette[i % len(palette)] for i, cid in enumerate(shared)}
+        for f in feats_sorted:
+            f['color'] = color_map.get(str(f['component_id']))
+
+        # File coverage: how many distinct files this protein's features span.
+        files = {f['filename'] for f in feats_sorted if f['filename']}
+        num_files = len(files)
+        pct_files = (num_files / total_files * 100) if total_files else 0.0
+
+        # Sequences split across multiple components: for each unique sequence,
+        # how many distinct components carry it.
+        seq_to_comps: Dict[str, set] = {}
+        for f in feats_sorted:
+            for clean, _, _ in f['seq_mass']:
+                seq_to_comps.setdefault(clean, set()).add(str(f['component_id']))
+        num_sequences = len(seq_to_comps)
+        num_split = sum(1 for comps_ in seq_to_comps.values() if len(comps_) > 1)
+        pct_split = (num_split / num_sequences * 100) if num_sequences else 0.0
+
+        # Average size of the components this protein occupies (each counted once).
+        comp_size_by_id = {str(f['component_id']): f['component_size'] for f in feats_sorted}
+        avg_component_size = (
+            statistics.mean(comp_size_by_id.values()) if comp_size_by_id else 0.0
+        )
+
+        result['spikes'].append({
+            'accession': acc,
+            'name': info['name'],
+            'description': info['description'],
+            'num_features': len(feats_sorted),
+            'num_components': len(comp_counts),
+            'num_shared_components': len(shared),
+            'num_files': num_files,
+            'pct_files': pct_files,
+            'num_sequences': num_sequences,
+            'num_split_sequences': num_split,
+            'pct_split_sequences': pct_split,
+            'avg_component_size': avg_component_size,
+            'features': feats_sorted,
+        })
+
+    result['spikes'].sort(key=lambda s: s['num_features'], reverse=True)
+    result['spikes_not_found'].sort()
+    result['total_spike_features'] = total
+    result['total_files'] = total_files
+    return result
+
+
 def detect_conflicting_pep_idents_in_component(vertices: List[Dict]) -> bool:
     """
     Detect if a component has conflicting pep_idents.
@@ -208,6 +427,9 @@ def analyze_pep_idents(components: List[Dict],
           conflict_percentage, conflict_examples
         - mass_diff_stats: {mean, median, n_components} or None — pairwise monoisotopic
           mass differences between conflicting sequences across all conflicted components
+        - multi_component_stats: pep_idents occurring in ≥2 components (i.e. still split),
+          with the component IDs each one is spread over and how many components that
+          affects in total
     """
     _empty: Dict = {
         'total_components': 0,
@@ -358,20 +580,35 @@ def analyze_pep_idents(components: List[Dict],
     multi_component_stats = None
     if pep_ident_to_comp_ids:
         distribution: Dict[int, int] = {}
+        split_pep_idents: List[Dict] = []
+        # Components holding at least one pep_ident that also occurs elsewhere
+        components_sharing: set = set()
+
         for pid, comp_ids in pep_ident_to_comp_ids.items():
             n = len(comp_ids)
             if n >= 2:
                 distribution[n] = distribution.get(n, 0) + 1
-        # Top-20 most redundant pep_idents (highest component count first)
-        multi_sorted = sorted(
-            ((pid, len(cids)) for pid, cids in pep_ident_to_comp_ids.items() if len(cids) >= 2),
-            key=lambda x: x[1], reverse=True,
-        )
+                components_sharing.update(comp_ids)
+                split_pep_idents.append({
+                    'pep_ident': pid,
+                    'n_components': n,
+                    'component_ids': sorted(comp_ids, key=str),
+                })
+
+        # Highest component count first; sequence as tie-break for stable output
+        split_pep_idents.sort(key=lambda d: (-d['n_components'], str(d['pep_ident'])))
+
+        pct_components_split = 0.0
+        if components_with_pep_idents:
+            pct_components_split = len(components_sharing) / components_with_pep_idents * 100
+
         multi_component_stats = {
             'total_unique_pep_idents': len(pep_ident_to_comp_ids),
             'total_multi_component': sum(distribution.values()),
             'distribution': distribution,
-            'top_redundant': multi_sorted[:20],  # list of (pep_ident, n_components)
+            'split_pep_idents': split_pep_idents,
+            'components_split': len(components_sharing),
+            'pct_components_split': pct_components_split,
         }
 
     # Vertex-level conflict stats
@@ -471,6 +708,70 @@ def analyze_feature_masses(components: List[Dict]) -> Dict:
 # Works on pre-computed bin counts+edges (no raw data in JS).
 _HISTOGRAM_JS = r"""
 <script>
+/* Plain decimal formatting — never scientific notation (0.00001, not 1e-5). */
+function _histFmt(v, dec) {
+    if (v === null || v === undefined || !isFinite(v)) return '—';
+    dec = Math.min(Math.max(Math.round(dec), 0), 100);
+    var s = v.toFixed(dec);
+    if (s.indexOf('.') >= 0) s = s.replace(/0+$/, '').replace(/\.$/, '');
+    return (s === '-0') ? '0' : s;
+}
+
+/* Decimals needed to resolve a span of width w (bin width / axis range). */
+function _histDec(w) {
+    w = Math.abs(w);
+    if (!(w > 0)) return 6;
+    return Math.min(Math.max(Math.ceil(-Math.log10(w)) + 3, 2), 15);
+}
+
+/* Hover handler: exact bin range + count for the bar under the cursor. */
+function _histTip(cfg, ev) {
+    var canvas = document.getElementById(cfg.cid);
+    var tip    = document.getElementById(cfg.tid);
+    var hl     = document.getElementById(cfg.hid);
+    var g      = cfg._geom;
+    if (!canvas || !tip || !g) return;
+
+    var rect = canvas.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    var sx = canvas.width / rect.width, sy = canvas.height / rect.height;
+    var mx = (ev.clientX - rect.left) * sx;
+    var my = (ev.clientY - rect.top)  * sy;
+    var idx = Math.floor((mx - g.padL) / g.bpx);
+
+    if (mx < g.padL || mx > g.padL + g.pw || my < g.padT || my > g.padT + g.ph ||
+        idx < 0 || idx >= g.nBars) {
+        tip.style.display = 'none';
+        if (hl) hl.style.display = 'none';
+        return;
+    }
+
+    var lo = g.lo[idx], hi = g.hi[idx], ct = g.bars[idx];
+    var dec = _histDec(hi - lo);
+    var pct = cfg.n ? (ct / cfg.n * 100) : 0;
+    tip.innerHTML =
+        '<b>' + _histFmt(lo, dec) + '</b> &ndash; <b>' + _histFmt(hi, dec) + '</b>'
+        + '<br><span style="opacity:.8">' + ct.toLocaleString() + ' of '
+        + (cfg.n || 0).toLocaleString() + ' (' + pct.toFixed(2) + '%)</span>';
+    tip.style.display = 'block';
+
+    if (hl) {
+        hl.style.display = 'block';
+        hl.style.left   = ((g.padL + idx * g.bpx) / sx) + 'px';
+        hl.style.width  = Math.max(g.bpx / sx, 1) + 'px';
+        hl.style.top    = (g.padT / sy) + 'px';
+        hl.style.height = (g.ph / sy) + 'px';
+    }
+
+    var cssX = mx / sx, cssY = my / sy;
+    var left = cssX + 14;
+    if (left + tip.offsetWidth > rect.width) left = cssX - tip.offsetWidth - 14;
+    var top = cssY + 14;
+    if (top + tip.offsetHeight > rect.height) top = cssY - tip.offsetHeight - 14;
+    tip.style.left = Math.max(left, 0) + 'px';
+    tip.style.top  = Math.max(top, 0)  + 'px';
+}
+
 function renderHistogram(cfg) {
     var canvas = document.getElementById(cfg.cid);
     if (!canvas) return;
@@ -484,22 +785,6 @@ function renderHistogram(cfg) {
     var xMin = cfg.edges[0];
     var xMax = cfg.pctEdges[pctIdx];
     if (!xMax || xMax <= xMin) xMax = cfg.edges[cfg.edges.length - 1];
-    var xRange = xMax - xMin;
-
-    /* Adaptive tick formatter — picks decimal places from the axis range */
-    function fmtX(v) {
-        if (xRange === 0) return v.toFixed(2);
-        var mag = Math.floor(Math.log10(xRange));
-        if (mag >= 3)  return v.toFixed(0);
-        if (mag >= 1)  return v.toFixed(1);
-        if (mag >= 0)  return v.toFixed(2);
-        if (mag >= -1) return v.toFixed(3);
-        if (mag >= -2) return v.toFixed(4);
-        return v.toExponential(2);
-    }
-
-    document.getElementById(cfg.bvid).textContent = nBins;
-    document.getElementById(cfg.xvid).textContent = fmtX(xMax);
 
     /* Find last pre-bin fully within [xMin, xMax] */
     var nPre = cfg.counts.length;
@@ -514,13 +799,31 @@ function renderHistogram(cfg) {
     var nOver = 0;
     for (var i = nVisible; i < nPre; i++) nOver += cfg.counts[i];
 
+    /* The bars fill the plot area exactly, so the axis must end where the last
+       drawn bin ends — otherwise ticks disagree with the hover ranges. */
+    var xEnd = cfg.edges[nVisible];
+    if (!(xEnd > xMin)) xEnd = xMax;
+    var xRange = xEnd - xMin;
+
+    /* Adaptive tick formatter — decimals from the axis range, plain notation */
+    function fmtX(v) {
+        if (xRange === 0) return _histFmt(v, 2);
+        return _histFmt(v, Math.min(Math.max(2 - Math.floor(Math.log10(xRange)), 0), 12));
+    }
+
+    document.getElementById(cfg.bvid).textContent = nBins;
+    document.getElementById(cfg.xvid).textContent = fmtX(xEnd);
+
     /* Re-bin: group nVisible pre-bins into nBins display bars */
     var grp = Math.max(1, Math.ceil(nVisible / nBins));
-    var bars = [];
+    var bars = [], barLo = [], barHi = [];
     for (var i = 0; i < nVisible; i += grp) {
+        var end = Math.min(i + grp, nVisible);
         var ct = 0;
-        for (var j = i; j < Math.min(i + grp, nVisible); j++) ct += cfg.counts[j];
+        for (var j = i; j < end; j++) ct += cfg.counts[j];
         bars.push(ct);
+        barLo.push(cfg.edges[i]);
+        barHi.push(cfg.edges[end]);
     }
     var nBars  = bars.length;
     var maxCt  = Math.max.apply(null, bars) || 1;
@@ -562,8 +865,8 @@ function renderHistogram(cfg) {
 
     /* Mean / Median */
     function vline(val, color, lbl) {
-        if (isNaN(val)) return;
-        var x = pad.l + ((val - xMin) / (xMax - xMin)) * pw;
+        if (isNaN(val) || xRange === 0) return;
+        var x = pad.l + ((val - xMin) / xRange) * pw;
         if (x < pad.l || x > pad.l + pw) return;
         ctx.save();
         ctx.strokeStyle = color; ctx.lineWidth = 1.5;
@@ -571,7 +874,7 @@ function renderHistogram(cfg) {
         ctx.beginPath(); ctx.moveTo(x, pad.t); ctx.lineTo(x, pad.t + ph); ctx.stroke();
         ctx.setLineDash([]);
         ctx.fillStyle = color; ctx.font = 'bold 10px Arial'; ctx.textAlign = 'center';
-        ctx.fillText(lbl + ': ' + fmtX(val), x, pad.t - 8);
+        ctx.fillText(lbl + ': ' + _histFmt(val, 10), x, pad.t - 8);
         ctx.restore();
     }
     vline(cfg.mean,   '#e74c3c', 'mean');
@@ -597,6 +900,20 @@ function renderHistogram(cfg) {
     if (nOver > 0) {
         ctx.fillStyle = '#aaa'; ctx.font = '10px Arial'; ctx.textAlign = 'right';
         ctx.fillText(nOver.toLocaleString() + ' values clipped', pad.l + pw - 4, pad.t + ph + 40);
+    }
+
+    /* Publish bar geometry for the hover tooltip, then bind it once */
+    cfg._geom = {
+        padL: pad.l, padT: pad.t, pw: pw, ph: ph,
+        bpx: bpx, nBars: nBars, bars: bars, lo: barLo, hi: barHi
+    };
+    if (!cfg._bound) {
+        cfg._bound = true;
+        canvas.addEventListener('mousemove', function(ev) { _histTip(cfg, ev); });
+        canvas.addEventListener('mouseleave', function() {
+            var t = document.getElementById(cfg.tid); if (t) t.style.display = 'none';
+            var h = document.getElementById(cfg.hid); if (h) h.style.display = 'none';
+        });
     }
 }
 </script>
@@ -625,12 +942,20 @@ def _interactive_histogram_html(
 
     # Pre-compute high-resolution histogram
     counts, edges = np.histogram(arr, bins=2000)
+
+    # Keep at least 10 decimals on the edges — more when the bins are finer than
+    # that — so the hover tooltip can state exact bin bounds instead of 0 – 0.
+    bin_w = float(edges[1] - edges[0]) if len(edges) > 1 else 0.0
+    edge_dec = 10
+    if bin_w > 0:
+        edge_dec = int(np.clip(np.ceil(-np.log10(bin_w)) + 4, 10, 15))
+
     counts_js = json.dumps(counts.tolist())
-    edges_js  = json.dumps([round(float(e), 6) for e in edges])
+    edges_js  = json.dumps([round(float(e), edge_dec) for e in edges])
 
     # Pre-compute percentile lookup (201 values: 0 % to 100 % in 0.5 % steps)
     pct_vals = np.percentile(arr, np.linspace(0, 100, 201))
-    pct_js   = json.dumps([round(float(v), 6) for v in pct_vals])
+    pct_js   = json.dumps([round(float(v), edge_dec) for v in pct_vals])
 
     # Default max-X slider at 99th percentile = index 198 (198/2 = 99 %)
     default_pct = 99.0
@@ -640,13 +965,15 @@ def _interactive_histogram_html(
     bvid = f'{hist_id}-bv'
     xid  = f'{hist_id}-x'
     xvid = f'{hist_id}-xv'
+    tid  = f'{hist_id}-tip'
+    hid  = f'{hist_id}-hl'
 
     return f"""
 <div style="margin:20px 0; padding:12px; background:#fafafa; border:1px solid #ddd; border-radius:6px;">
   <h4 style="margin:0 0 6px">{title}</h4>
   <p style="margin:0 0 10px;font-size:.95em">
-    Mean:&nbsp;<strong>{mean_val:.3f}</strong>&nbsp;&nbsp;
-    Median:&nbsp;<strong>{median_val:.3f}</strong>&nbsp;&nbsp;
+    Mean:&nbsp;<strong>{mean_val:.10f}</strong>&nbsp;&nbsp;
+    Median:&nbsp;<strong>{median_val:.10f}</strong>&nbsp;&nbsp;
     N:&nbsp;<strong>{n_total:,}</strong>
   </p>
   <div style="display:flex;gap:28px;flex-wrap:wrap;margin-bottom:8px;font-size:.9em;">
@@ -659,16 +986,26 @@ def _interactive_histogram_html(
              style="width:140px;vertical-align:middle" oninput="_rh_{hist_id}()">
     </label>
   </div>
-  <canvas id="{cid}" style="width:100%;height:380px;display:block;"></canvas>
+  <div style="position:relative">
+    <canvas id="{cid}" style="width:100%;height:380px;display:block;cursor:crosshair;"></canvas>
+    <div id="{hid}" style="position:absolute;display:none;pointer-events:none;
+         background:rgba(52,152,219,.22);border-left:1px solid #2980b9;
+         border-right:1px solid #2980b9;"></div>
+    <div id="{tid}" style="position:absolute;display:none;pointer-events:none;z-index:5;
+         background:rgba(30,30,30,.92);color:#fff;padding:5px 8px;border-radius:4px;
+         font:11px/1.45 Arial,sans-serif;white-space:nowrap;
+         box-shadow:0 2px 6px rgba(0,0,0,.3);"></div>
+  </div>
 </div>
 <script>
 (function(){{
   var _cfg = {{
     cid:'{cid}', bid:'{bid}', bvid:'{bvid}', xid:'{xid}', xvid:'{xvid}',
+    tid:'{tid}', hid:'{hid}',
     counts:{counts_js},
     edges:{edges_js},
     pctEdges:{pct_js},
-    mean:{mean_val}, median:{median_val},
+    mean:{mean_val}, median:{median_val}, n:{n_total},
     xlabel:{json.dumps(xlabel)}
   }};
   window._rh_{hist_id} = function(){{ renderHistogram(_cfg); }};
@@ -679,13 +1016,145 @@ def _interactive_histogram_html(
 """
 
 
+def generate_spikein_html_section(spikein_stats: Dict) -> str:
+    """Return the HTML section for spike-in analysis (one collapsible table per protein)."""
+    if not spikein_stats:
+        return ''
+    spikes = spikein_stats.get('spikes', [])
+    not_found = spikein_stats.get('spikes_not_found', [])
+    if not spikes and not not_found:
+        return ''
+
+    parts = []
+    parts.append('<h2>Spike-in Analysis</h2>')
+    total_lib = len(spikes) + len(not_found)
+    parts.append(
+        f'<p>Detected <strong>{len(spikes)}</strong> of '
+        f'<strong>{total_lib}</strong> spike-in protein(s) from the library, across '
+        f'<strong>{spikein_stats.get("total_spike_features", 0):,}</strong> feature(s). '
+        f'Only features whose <code>prot_ident</code> is a single spike-in accession '
+        f'are counted — peptides shared with any other protein are excluded so that '
+        f'non-spike-in fragments are not picked up.</p>'
+    )
+
+    total_files = spikein_stats.get('total_files', 0)
+
+    if spikes:
+        # ── Per-protein overview / comparison table ──────────────────────────
+        parts.append('<h3>Per-protein Overview</h3>')
+        parts.append(
+            '<table>'
+            '<tr><th>Protein</th><th>Features</th><th>Components</th>'
+            f'<th>Files (of {total_files:,})</th>'
+            '<th>Sequences split across components</th>'
+            '<th>Avg component size</th></tr>'
+        )
+        for spike in spikes:
+            parts.append(
+                '<tr>'
+                f'<td><strong>{spike["accession"]}</strong></td>'
+                f'<td>{spike["num_features"]:,}</td>'
+                f'<td>{spike["num_components"]:,}</td>'
+                f'<td>{spike["num_files"]:,} ({spike["pct_files"]:.1f}%)</td>'
+                f'<td>{spike["num_split_sequences"]:,} / {spike["num_sequences"]:,} '
+                f'({spike["pct_split_sequences"]:.1f}%)</td>'
+                f'<td>{spike["avg_component_size"]:.2f}</td>'
+                '</tr>'
+            )
+        parts.append('</table>')
+
+        parts.append(
+            '<p><em>Click a protein to expand every feature carrying that identification. '
+            'Features that share the same component are grouped on adjacent rows and given '
+            'a matching background colour.</em></p>'
+        )
+
+    for spike in spikes:
+        shared = spike['num_shared_components']
+        shared_note = ''
+        if shared:
+            shared_note = f' &nbsp;·&nbsp; {shared} shared component(s)'
+        parts.append('<details class="spike">')
+        parts.append(
+            f'<summary><strong>{spike["accession"]}</strong> &nbsp;—&nbsp; '
+            f'{spike["num_features"]:,} feature(s) in {spike["num_components"]:,} '
+            f'component(s){shared_note}</summary>'
+        )
+        parts.append('<div class="spike-body">')
+        parts.append(f'<p class="spike-desc">({spike["description"]})</p>')
+        parts.append(
+            '<p class="spike-metrics">'
+            f'Files: <strong>{spike["num_files"]:,}</strong> of {total_files:,} '
+            f'({spike["pct_files"]:.1f}%) &nbsp;·&nbsp; '
+            f'Sequences split across components: <strong>{spike["num_split_sequences"]:,}</strong> '
+            f'of {spike["num_sequences"]:,} ({spike["pct_split_sequences"]:.1f}%) &nbsp;·&nbsp; '
+            f'Avg component size: <strong>{spike["avg_component_size"]:.2f}</strong></p>'
+        )
+        parts.append('<table>')
+        parts.append(
+            '<tr><th>#</th><th>Sequence</th><th>Mass (Da)</th>'
+            '<th>m/z</th><th>RT</th><th>Charge</th><th>File</th>'
+            '<th>Component</th></tr>'
+        )
+        for i, f in enumerate(spike['features'], 1):
+            seq_mass = f['seq_mass']
+            if seq_mass:
+                seq_cell = '<br>'.join(
+                    f'<code>{clean}</code>'
+                    + (f' <span style="color:#888;font-size:0.85em">({raw})</span>'
+                       if raw != clean else '')
+                    for clean, raw, _ in seq_mass
+                )
+                mass_cell = '<br>'.join(f'{mass:.3f}' for _, _, mass in seq_mass)
+            else:
+                seq_cell = '<em>—</em>'
+                mass_cell = '—'
+            charge = f.get('charge')
+            charge_cell = str(charge) if charge is not None else '—'
+            mz = f.get('mz')
+            mz_cell = f'{mz:.4f}' if isinstance(mz, (int, float)) else '—'
+            rt = f.get('rt')
+            rt_cell = f'{rt:.1f}' if isinstance(rt, (int, float)) else '—'
+            file_cell = f'{f["filename"]}' if f.get('filename') else '—'
+            style = f' style="background-color:{f["color"]}"' if f.get('color') else ''
+            parts.append(
+                f'<tr{style}><td>{i}</td><td>{seq_cell}</td><td>{mass_cell}</td>'
+                f'<td>{mz_cell}</td><td>{rt_cell}</td><td>{charge_cell}</td>'
+                f'<td>{file_cell}</td><td>{f["component_id"]}</td></tr>'
+            )
+        parts.append('</table>')
+        parts.append('</div>')
+        parts.append('</details>')
+
+    # ── Comparison histogram: average component size across all spike-ins ─────
+    if len(spikes) >= 1:
+        avg_size_img = plot_spikein_avg_component_size(spikes)
+        if avg_size_img:
+            parts.append('<h3>Average Component Size Comparison</h3>')
+            parts.append('<div class="plot">')
+            parts.append(
+                f'<img src="data:image/png;base64,{avg_size_img}" '
+                f'alt="Average Component Size per Spike-in Protein"/>'
+            )
+            parts.append('</div>')
+
+    if not_found:
+        names = ', '.join(f'<code>{acc}</code>' for acc, _ in not_found)
+        parts.append(
+            f'<p style="color:#7f8c8d;"><em>Not detected in any component '
+            f'({len(not_found)}):</em> {names}</p>'
+        )
+
+    return '\n'.join(parts)
+
+
 def generate_feature_mass_html_section(feature_mass_stats: Dict) -> str:
     """Return the full HTML section for feature mass analysis (3 interactive histograms)."""
     if not feature_mass_stats:
         return ''
 
     parts = []
-    parts.append('<h2>⚖️ Feature Mass Analysis</h2>')
+    parts.append('<h2>Feature Mass Analysis</h2>')
     parts.append(
         f'<p>Components with mass data: '
         f'<strong>{feature_mass_stats["n_components_with_masses"]:,}</strong> &nbsp;|&nbsp; '
@@ -985,21 +1454,33 @@ def plot_multi_component_histogram(distribution: Dict[int, int]) -> str:
     ns     = sorted(distribution.keys())
     counts = [distribution[n] for n in ns]
 
-    fig, ax = plt.subplots(figsize=(max(6, len(ns) * 0.6 + 2), 5))
+    # Width grows with the number of distinct values but stays printable — real
+    # runs have a long tail (N in the hundreds) that would otherwise produce a
+    # multi-thousand-pixel strip that renders as an unreadable sliver.
+    width = min(max(6.0, len(ns) * 0.6 + 2), 16.0)
+    fig, ax = plt.subplots(figsize=(width, 5))
     bars = ax.bar(ns, counts, color='mediumpurple', edgecolor='black', alpha=0.75)
 
-    for bar, count in zip(bars, counts):
-        ax.text(
-            bar.get_x() + bar.get_width() / 2.0,
-            bar.get_height(),
-            f'{count:,}',
-            ha='center', va='bottom', fontsize=9
-        )
+    # Per-bar labels and one tick per value only stay legible for few values
+    if len(ns) <= 30:
+        for bar, count in zip(bars, counts):
+            ax.text(
+                bar.get_x() + bar.get_width() / 2.0,
+                bar.get_height(),
+                f'{count:,}',
+                ha='center', va='bottom', fontsize=9
+            )
+        ax.set_xticks(ns)
+
+    ylabel = 'Count of Distinct Pep_idents'
+    # Counts span orders of magnitude once there is a tail; keep it visible
+    if max(counts) >= 100 * max(min(counts), 1):
+        ax.set_yscale('log')
+        ylabel += ' (log scale)'
 
     ax.set_xlabel('Number of Components the Pep_ident Appears In')
-    ax.set_ylabel('Count of Distinct Pep_idents')
+    ax.set_ylabel(ylabel)
     ax.set_title('Pep_ident Redundancy — How Many Pep_idents Span Multiple Components')
-    ax.set_xticks(ns)
     ax.grid(axis='y', alpha=0.3)
 
     plt.tight_layout()
@@ -1058,6 +1539,45 @@ def plot_mass_diff_histogram(all_pairwise_diffs: List[float]) -> str:
     return img_base64
 
 
+def plot_spikein_avg_component_size(spikes: List[Dict]) -> str:
+    """Horizontal bar chart comparing the mean component size per spike-in protein.
+
+    Returns:
+        Base64-encoded PNG, or empty string if no data.
+    """
+    if not spikes:
+        return ""
+
+    # Order largest mean component size at the top for easy comparison.
+    ordered = sorted(spikes, key=lambda s: s['avg_component_size'])
+    labels = [s['accession'] for s in ordered]
+    values = [s['avg_component_size'] for s in ordered]
+
+    fig, ax = plt.subplots(figsize=(9, max(3, len(labels) * 0.45 + 1)))
+    bars = ax.barh(labels, values, color='teal', edgecolor='black', alpha=0.8)
+
+    for bar, val in zip(bars, values):
+        ax.text(bar.get_width(), bar.get_y() + bar.get_height() / 2.0,
+                f' {val:.2f}', ha='left', va='center', fontsize=9)
+
+    ax.set_xlabel('Average Component Size (vertices)')
+    ax.set_ylabel('Spike-in Protein')
+    ax.set_title('Average Component Size per Spike-in Protein')
+    ax.grid(axis='x', alpha=0.3)
+    # Add headroom so value labels are not clipped at the right edge.
+    if values:
+        ax.set_xlim(0, max(values) * 1.15)
+
+    plt.tight_layout()
+
+    buf = BytesIO()
+    plt.savefig(buf, format='png', dpi=100)
+    buf.seek(0)
+    img_base64 = base64.b64encode(buf.read()).decode('utf-8')
+    plt.close(fig)
+    return img_base64
+
+
 def generate_html_report(
     components_data: Dict,
     cycles: List[Dict],
@@ -1068,6 +1588,7 @@ def generate_html_report(
     output_html: str,
     parameters: Dict = None,
     feature_mass_stats: Dict = None,
+    spikein_stats: Dict = None,
 ):
     """Generate HTML report."""
     
@@ -1103,6 +1624,14 @@ def generate_html_report(
         .success { color: #27ae60; font-weight: bold; }
         .warning { color: #f39c12; font-weight: bold; }
         .info { color: #3498db; font-weight: bold; }
+        details.spike { border: 1px solid #bdc3c7; border-radius: 5px; margin: 8px 0; }
+        details.spike > summary { cursor: pointer; padding: 10px 15px; background-color: #ecf0f1; font-weight: bold; color: #2c3e50; border-radius: 5px; }
+        details.spike[open] > summary { border-bottom: 1px solid #bdc3c7; border-radius: 5px 5px 0 0; }
+        details.spike > summary:hover { background-color: #e0e6e8; }
+        details.spike .spike-body { padding: 0 15px 10px; }
+        details.spike table { margin: 12px 0; }
+        .spike-desc { margin: 12px 0 4px; color: #7f8c8d; font-style: italic; }
+        .spike-metrics { margin: 4px 0 8px; color: #34495e; font-size: 0.92em; }
     </style>
 </head>
 <body>
@@ -1110,14 +1639,14 @@ def generate_html_report(
 """)
     
     # Title
-    html_parts.append("<h1>🔄 Clusterless Component Building Report</h1>")
+    html_parts.append("<h1>Clusterless Component Building Report</h1>")
     
     initial_vertices = cycle_metadata.get('initial_vertices')
     unpaired_vertices_final = component_stats['singletons']
     vertices_after_cutoff = (initial_vertices - unpaired_vertices_final) if initial_vertices is not None else None
 
     # Overview metrics
-    html_parts.append("<h2>📊 Overview</h2>")
+    html_parts.append("<h2>Overview</h2>")
     html_parts.append(f"""
 <div class="metric">
     <span class="metric-label">Total Cycles:</span>
@@ -1159,7 +1688,7 @@ def generate_html_report(
 
     # Cycle convergence table
     if cycles:
-        html_parts.append("<h2>🔁 Cycle Convergence</h2>")
+        html_parts.append("<h2>Cycle Convergence</h2>")
         html_parts.append("<table>")
         html_parts.append("<tr><th>Cycle</th><th>Edges</th><th>Components Accepted</th><th>Unpaired Vertices</th><th>Vertices Deleted</th><th>Status</th></tr>")
         
@@ -1171,7 +1700,7 @@ def generate_html_report(
             deleted = cycle['vertices_deleted']
 
             if edges == 0 or deleted == 0:
-                status = '<span class="success">✓ Converged</span>'
+                status = '<span class="success">Converged</span>'
             else:
                 status = '<span class="info">→ Continue</span>'
 
@@ -1186,7 +1715,7 @@ def generate_html_report(
             html_parts.append('</div>')
     
     # Component size distribution
-    html_parts.append("<h2>📈 Component Size Distribution</h2>")
+    html_parts.append("<h2>Component Size Distribution</h2>")
     total_c = component_stats['total_components']
     total_v = component_stats['total_vertices']
     avg_c_size = total_v / total_c if total_c > 0 else 0.0
@@ -1202,7 +1731,7 @@ def generate_html_report(
     
     # Pep_ident conflict analysis
     if pep_ident_stats['total_components'] > 0:
-        html_parts.append("<h2>🔬 Peptide Identification Analysis</h2>")
+        html_parts.append("<h2>Peptide Identification Analysis</h2>")
         html_parts.append(f"<p>Total components analyzed: <strong>{pep_ident_stats['total_components']}</strong></p>")
         html_parts.append(f"<p>Components with identifications: <strong>{pep_ident_stats['components_with_pep_idents']}</strong></p>")
         html_parts.append(f"<p>Components with conflicting identifications: <strong>{pep_ident_stats['components_with_conflicts']}</strong></p>")
@@ -1282,6 +1811,13 @@ def generate_html_report(
                     f'Appearing in ≥2 components: '
                     f'<strong>{mcs["total_multi_component"]:,}</strong></p>'
                 )
+                html_parts.append(
+                    f'<p>Components holding a pep_ident that also occurs elsewhere: '
+                    f'<strong>{mcs["components_split"]:,}</strong> of '
+                    f'{pep_ident_stats["components_with_pep_idents"]:,} identified components '
+                    f'(<strong>{mcs["pct_components_split"]:.1f}%</strong>) &mdash; these are '
+                    f'the components that would merge if the split were resolved.</p>'
+                )
                 multi_hist_img = plot_multi_component_histogram(mcs.get('distribution', {}))
                 if multi_hist_img:
                     html_parts.append('<div class="plot">')
@@ -1291,20 +1827,47 @@ def generate_html_report(
                     )
                     html_parts.append('</div>')
 
-                top_redundant = mcs.get('top_redundant', [])
-                if top_redundant:
-                    html_parts.append(
-                        f'<h4>Top {len(top_redundant)} Most Redundant Pep_idents</h4>'
-                    )
-                    html_parts.append(
-                        '<table>'
-                        '<tr><th>#</th><th>Pep_ident sequence</th><th>Components</th></tr>'
-                    )
-                    for rank, (pid, n_comp) in enumerate(top_redundant, 1):
+                split_pep_idents = mcs.get('split_pep_idents', [])
+                if split_pep_idents:
+                    def _split_rows(entries, start=1):
+                        rows = [
+                            '<table>'
+                            '<tr><th>#</th><th>Pep_ident sequence</th><th>Components</th>'
+                            '<th>Component IDs</th></tr>'
+                        ]
+                        for rank, entry in enumerate(entries, start):
+                            ids = entry['component_ids']
+                            shown = ', '.join(str(c) for c in ids[:_MAX_SPLIT_IDS_SHOWN])
+                            if len(ids) > _MAX_SPLIT_IDS_SHOWN:
+                                shown += (f' <em>+{len(ids) - _MAX_SPLIT_IDS_SHOWN} '
+                                          f'more</em>')
+                            rows.append(
+                                f'<tr><td>{rank}</td><td><code>{entry["pep_ident"]}</code></td>'
+                                f'<td>{entry["n_components"]:,}</td>'
+                                f'<td style="font-size:.85em">{shown}</td></tr>'
+                            )
+                        rows.append('</table>')
+                        return rows
+
+                    top = split_pep_idents[:20]
+                    html_parts.append(f'<h4>Top {len(top)} Most Redundant Pep_idents</h4>')
+                    html_parts.extend(_split_rows(top))
+
+                    if len(split_pep_idents) > len(top):
+                        listed = split_pep_idents[:_MAX_SPLIT_ROWS]
+                        html_parts.append('<details>')
                         html_parts.append(
-                            f'<tr><td>{rank}</td><td><code>{pid}</code></td><td>{n_comp:,}</td></tr>'
+                            f'<summary>All {len(split_pep_idents):,} pep_idents split '
+                            f'across ≥2 components</summary>'
                         )
-                    html_parts.append('</table>')
+                        html_parts.extend(_split_rows(listed))
+                        if len(split_pep_idents) > len(listed):
+                            html_parts.append(
+                                f'<p style="color:#7f8c8d"><em>Showing the '
+                                f'{len(listed):,} most redundant of '
+                                f'{len(split_pep_idents):,}.</em></p>'
+                            )
+                        html_parts.append('</details>')
 
             vcs = pep_ident_stats.get('vertex_conflict_stats')
             if vcs:
@@ -1334,13 +1897,19 @@ def generate_html_report(
         else:
             html_parts.append("<p><em>No components with peptide identifications found.</em></p>")
 
+    # Spike-in analysis
+    if spikein_stats:
+        spike_html = generate_spikein_html_section(spikein_stats)
+        if spike_html:
+            html_parts.append(spike_html)
+
     # Feature mass analysis
     if feature_mass_stats:
         html_parts.append(generate_feature_mass_html_section(feature_mass_stats))
 
     # File linkage analysis
     if file_linkage['total_files'] > 0:
-        html_parts.append("<h2>🔗 File Linkage Analysis</h2>")
+        html_parts.append("<h2>File Linkage Analysis</h2>")
         html_parts.append(f"<p>Total files: <strong>{file_linkage['total_files']}</strong></p>")
         html_parts.append(f"<p>Average linkage score: <strong>{file_linkage['avg_linkage_score']:.4f}</strong></p>")
         html_parts.append("<p><em>Linkage score = proportion of components containing each file</em></p>")
@@ -1359,7 +1928,7 @@ def generate_html_report(
     
     # Parameters (if provided)
     if parameters:
-        html_parts.append("<h2>⚙️ Parameters</h2>")
+        html_parts.append("<h2>Parameters</h2>")
         html_parts.append("<table>")
         html_parts.append("<tr><th>Parameter</th><th>Value</th></tr>")
         for key, value in sorted(parameters.items()):
@@ -1389,6 +1958,7 @@ def generate_text_summary(
     output_summary: str,
     parameters: Dict = None,
     feature_mass_stats: Dict = None,
+    spikein_stats: Dict = None,
 ):
     """Generate plain text summary."""
 
@@ -1477,13 +2047,27 @@ def generate_text_summary(
                     f"Pep_ident redundancy: {mcs['total_multi_component']:,} of "
                     f"{mcs['total_unique_pep_idents']:,} unique pep_idents appear in ≥2 components"
                 )
+                lines.append(
+                    f"Components affected:  {mcs['components_split']:,} of "
+                    f"{pep_ident_stats['components_with_pep_idents']:,} identified components "
+                    f"({mcs['pct_components_split']:.1f}%) hold a pep_ident that also "
+                    f"occurs elsewhere"
+                )
                 if dist_str:
                     lines.append(f"  Distribution: {dist_str}")
-                top_redundant = mcs.get('top_redundant', [])
-                if top_redundant:
-                    lines.append(f"  Top {len(top_redundant)} most redundant pep_idents:")
-                    for rank, (pid, n_comp) in enumerate(top_redundant, 1):
-                        lines.append(f"    {rank:2d}. {pid}  ({n_comp} components)")
+                split_pep_idents = mcs.get('split_pep_idents', [])
+                if split_pep_idents:
+                    top = split_pep_idents[:20]
+                    lines.append(f"  Top {len(top)} most redundant pep_idents:")
+                    for rank, entry in enumerate(top, 1):
+                        ids = entry['component_ids']
+                        shown = ', '.join(str(c) for c in ids[:_MAX_SPLIT_IDS_SHOWN])
+                        if len(ids) > _MAX_SPLIT_IDS_SHOWN:
+                            shown += f", +{len(ids) - _MAX_SPLIT_IDS_SHOWN} more"
+                        lines.append(
+                            f"    {rank:2d}. {entry['pep_ident']}  "
+                            f"({entry['n_components']} components: {shown})"
+                        )
 
             vcs = pep_ident_stats.get('vertex_conflict_stats')
             if vcs:
@@ -1528,6 +2112,30 @@ def generate_text_summary(
         
         lines.append("")
     
+    # Spike-in analysis
+    if spikein_stats and (spikein_stats.get('spikes') or spikein_stats.get('spikes_not_found')):
+        spikes = spikein_stats.get('spikes', [])
+        not_found = spikein_stats.get('spikes_not_found', [])
+        lines.append("SPIKE-IN ANALYSIS")
+        lines.append("-" * 70)
+        total_files = spikein_stats.get('total_files', 0)
+        lines.append(f"Spike-ins detected: {len(spikes)} of {len(spikes) + len(not_found)}  "
+                     f"({spikein_stats.get('total_spike_features', 0):,} features)")
+        for spike in spikes:
+            lines.append(f"  {spike['accession']:<10} {spike['num_features']:>5} feature(s) "
+                         f"in {spike['num_components']} component(s)"
+                         + (f", {spike['num_shared_components']} shared"
+                            if spike['num_shared_components'] else ''))
+            lines.append(f"      ({spike['description']})")
+            lines.append(f"      Files: {spike['num_files']} of {total_files} "
+                         f"({spike['pct_files']:.1f}%)  |  "
+                         f"Sequences split across components: {spike['num_split_sequences']} "
+                         f"of {spike['num_sequences']} ({spike['pct_split_sequences']:.1f}%)  |  "
+                         f"Avg component size: {spike['avg_component_size']:.2f}")
+        if not_found:
+            lines.append("  Not detected: " + ", ".join(acc for acc, _ in not_found))
+        lines.append("")
+
     # Feature mass analysis
     if feature_mass_stats:
         lines.append("FEATURE MASS ANALYSIS")
@@ -1535,16 +2143,16 @@ def generate_text_summary(
         lines.append(f"Components with mass data: {feature_mass_stats['n_components_with_masses']:,}")
         ps = feature_mass_stats.get('pairwise_stats')
         if ps:
-            lines.append(f"All pairwise diffs  — mean: {ps['mean']:.3f} Da  "
-                         f"median: {ps['median']:.3f} Da  N: {ps['n']:,}")
+            lines.append(f"All pairwise diffs  — mean: {ps['mean']:.10f} Da  "
+                         f"median: {ps['median']:.10f} Da  N: {ps['n']:,}")
         ms = feature_mass_stats.get('mean_diff_stats')
         if ms:
-            lines.append(f"Component mean diffs — mean: {ms['mean']:.3f} Da  "
-                         f"median: {ms['median']:.3f} Da  N: {ms['n']:,}")
+            lines.append(f"Component mean diffs — mean: {ms['mean']:.10f} Da  "
+                         f"median: {ms['median']:.10f} Da  N: {ms['n']:,}")
         ns = feature_mass_stats.get('nn_stats')
         if ns:
-            lines.append(f"Nearest-neighbour   — mean: {ns['mean']:.3f} Da  "
-                         f"median: {ns['median']:.3f} Da  N: {ns['n']:,}")
+            lines.append(f"Nearest-neighbour   — mean: {ns['mean']:.10f} Da  "
+                         f"median: {ns['median']:.10f} Da  N: {ns['n']:,}")
         lines.append("")
 
     # File linkage
@@ -1606,6 +2214,9 @@ def main():
                        help="C-terminal modification: none (free -COOH) | amide (-CONH2, -0.984 Da) (default: none)")
     parser.add_argument("--tsv_files", nargs='*', default=None,
                        help="TSV files from map_mzml_features (for raw pep_ident with inline mods)")
+    parser.add_argument("--spikeins_fasta", default="/workspaces/unbeQuant/files/spikeins.txt",
+                       help="FASTA file of spike-in proteins; features are matched by prot_ident "
+                            "(default: /workspaces/unbeQuant/files/spikeins.txt)")
 
     args = parser.parse_args()
     
@@ -1659,21 +2270,36 @@ def main():
     if pep_ident_stats['components_with_pep_idents'] > 0:
         print(f"  Conflict rate: {pep_ident_stats['conflict_percentage']:.1f}%")
     
+    # Analyze spike-ins
+    print("\nAnalyzing spike-ins...")
+    spikeins = load_spikeins(args.spikeins_fasta)
+    spikein_stats = None
+    if spikeins:
+        print(f"  Loaded {len(spikeins)} spike-in protein(s) from: "
+              f"{os.path.basename(args.spikeins_fasta)}")
+        spikein_stats = analyze_spikeins(
+            components, spikeins, args.nterm_mod, args.cys_mod, args.cterm_mod, raw_lookup
+        )
+        print(f"  Spike-ins detected: {len(spikein_stats['spikes'])} "
+              f"({spikein_stats['total_spike_features']:,} features)")
+    else:
+        print(f"  No spike-in library found at: {args.spikeins_fasta} (skipping)")
+
     # Analyze feature masses
     print("\nAnalyzing feature masses...")
     feature_mass_stats = analyze_feature_masses(components)
     ps = feature_mass_stats.get('pairwise_stats')
     ns = feature_mass_stats.get('nn_stats')
     if ps:
-        print(f"  Pairwise diffs: mean={ps['mean']:.3f} Da  median={ps['median']:.3f} Da  N={ps['n']:,}")
+        print(f"  Pairwise diffs: mean={ps['mean']:.10f} Da  median={ps['median']:.10f} Da  N={ps['n']:,}")
     if ns:
-        print(f"  Nearest-neighbour: mean={ns['mean']:.3f} Da  median={ns['median']:.3f} Da")
+        print(f"  Nearest-neighbour: mean={ns['mean']:.10f} Da  median={ns['median']:.10f} Da")
 
     # Generate outputs
     print("\nGenerating reports...")
     generate_text_summary(
         component_stats, cycles, cycle_metadata, file_linkage, pep_ident_stats,
-        args.output_summary, parameters, feature_mass_stats,
+        args.output_summary, parameters, feature_mass_stats, spikein_stats,
     )
 
     if args.output_html:
@@ -1687,6 +2313,7 @@ def main():
             args.output_html,
             parameters,
             feature_mass_stats,
+            spikein_stats,
         )
     
     print("\n" + "="*70)

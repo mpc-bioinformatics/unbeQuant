@@ -1,0 +1,21 @@
+# Site-wide R configuration for the unbeQuant image (Ubuntu 22.04 / jammy).
+#
+# Points CRAN at the Posit Public Package Manager, which serves PRECOMPILED
+# binaries for jammy. Without the HTTPUserAgent option below P3M silently falls
+# back to source packages, which turns a few-minute install into an hours-long
+# compile.
+local({
+  options(repos = c(
+    P3M  = "https://packagemanager.posit.co/cran/__linux__/jammy/latest",
+    CRAN = "https://cloud.r-project.org"
+  ))
+
+  options(HTTPUserAgent = sprintf(
+    "R/%s R (%s)", getRversion(),
+    paste(getRversion(), R.version["platform"], R.version["arch"], R.version["os"])
+  ))
+
+  # Parallelise source builds (Bioconductor packages are not available as
+  # P3M binaries and must be compiled).
+  options(Ncpus = max(1L, parallel::detectCores() - 1L))
+})

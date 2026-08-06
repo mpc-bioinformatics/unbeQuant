@@ -1,0 +1,62 @@
+# ============================================================================
+# unbeQuant - Sample Condition Mapping
+# ============================================================================
+# Assigns each measurement file to an experimental condition (group).
+#
+# WHY THIS FILE EXISTS
+#   ProtStatsWF::workflow_QC derives sample groups purely from the intensity
+#   column name, by splitting on "_" and taking the FIRST element:
+#
+#       group <- factor(limma::strsplit2(colnames(D), "_")[,1])
+#
+#   Raw measurement names therefore group incorrectly on their own
+#   (e.g. "FLI04006" would become its own one-sample group). This file maps
+#   each file to a condition so the intensity columns can be renamed to
+#   <CONDITION>_<REPLICATE>, e.g. C1_01, C1_02, ...
+#
+# HOW TO FILL THIS IN
+#   * One row per measurement file, TAB-separated, exactly two columns.
+#   * Column 1 = filename   as the RAW / mzML file is named, WITHOUT extension
+#                           (e.g. C1_FLI04006). MUST be identical to the name of the RAW file
+#   * Column 2 = condition  the experimental group the file belongs to.
+#   * Condition names MUST NOT contain an underscore ("_"), because
+#     workflow_QC splits on it to recover the group. Use "C1" or "Control",
+#     never "Cond_1".
+#   * Replicate numbers (01, 02, ...) are assigned automatically, in file
+#     order within each condition. Do not add them here.
+#   * Lines starting with "#" and blank lines are ignored.
+#   * Any file left as UNASSIGNED aborts the run with an explicit error,
+#     rather than being silently mis-grouped.
+#   * To add a condition, just append its rows with a new condition name.
+#
+# TEMPLATE
+#   filename        condition
+#   C1_FLI04006     C1
+#   C2_FLI04008     C2
+# ============================================================================
+filename	condition
+C1_FLI04006	C1
+C1_FLI04028	C1
+C1_FLI04050	C1
+C1_FLI04072	C1
+C1_FLI04094	C1
+C2_FLI04008	C2
+C2_FLI04030	C2
+C2_FLI04052	C2
+C2_FLI04074	C2
+C2_FLI04096	C2
+C3_FLI04010	C3
+C3_FLI04034	C3
+C3_FLI04056	C3
+C3_FLI04078	C3
+C3_FLI04100	C3
+C4_FLI04012	C4
+C4_FLI04036	C4
+C4_FLI04058	C4
+C4_FLI04080	C4
+C4_FLI04102	C4
+C5_FLI04014	C5
+C5_FLI04038	C5
+C5_FLI04060	C5
+C5_FLI04082	C5
+C5_FLI04104	C5

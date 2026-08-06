@@ -119,7 +119,6 @@ def run_pairing_cycle(
         '--output_json', os.path.join(cycle_dir, 'paired_features_edges.json'),
         '--output_unpaired_json', os.path.join(cycle_dir, 'paired_features_unpaired.json'),
         '--cycle_num', str(cycle_num),
-        '--skip-matchfinder',  # We only need edges for graph building
     ]
     
     # Input handling
@@ -150,9 +149,7 @@ def run_pairing_cycle(
     # JSON-based RT correction (loess/polynomial/etc.)
     if config.get('rt_correction_json'):
         cmd.extend(['--rt_correction_json', config['rt_correction_json']])
-        cmd.extend(['--rt_correction_mode', config.get('rt_correction_mode', 'none')])
-        cmd.extend(['--rt_source', config.get('rt_source', 'y_center')])
-    
+
     # Other parameters
     if config.get('normalize_coordinates') is not None:
         cmd.extend(['--normalize_coordinates', str(config['normalize_coordinates'])])
@@ -160,6 +157,8 @@ def run_pairing_cycle(
         cmd.append('--distance_calc_before_scaling')
     if config.get('mz_rt_weight_ratio', 1.0) != 1.0:
         cmd.extend(['--mz_rt_weight_ratio', str(config['mz_rt_weight_ratio'])])
+    if config.get('max_match_candidates', 1) != 1:
+        cmd.extend(['--max_match_candidates', str(config['max_match_candidates'])])
     
     # Run pairing (stream output directly so it's visible in real-time)
     result = subprocess.run(cmd)
@@ -215,18 +214,13 @@ def run_graph_building_cycle(
         '--output_composition', os.path.join(cycle_dir, 'graph_composition.json'),
     ]
     
-    # Add cutoffs
-    if config.get('mz_cutoff') is not None:
-        cmd.extend(['--mz_cutoff', str(config['mz_cutoff'])])
-    if config.get('rt_cutoff') is not None:
-        cmd.extend(['--rt_cutoff', str(config['rt_cutoff'])])
-    if config.get('edge_cutoff') is not None:
-        cmd.extend(['--edge_cutoff', str(config['edge_cutoff'])])
-    
+    # No cutoffs are forwarded to the graph step: pairing already applied them before
+    # emitting an edge, so every edge in the pkl has passed. (config['edge_cutoff'] was
+    # never set by anything either.)
+
     # Filtering
     if config.get('filter_duplicate_file_vertices', True):
         cmd.append('--filter-duplicate-file-vertices')
-        cmd.extend(['--filter-method', config.get('filter_method', 'simplified-modularity')])
         cmd.extend(['--mega_complexity_threshold', str(config.get('mega_complexity_threshold', 5000))])
     
     # Ident lookup
@@ -240,6 +234,8 @@ def run_graph_building_cycle(
     # Multiprocessing
     if config.get('disable_multiprocessing'):
         cmd.append('--disable-multiprocessing')
+    elif config.get('num_workers') is not None:
+        cmd.extend(['--num_workers', str(config['num_workers'])])
     
     # Run graph building (stream output directly so it's visible in real-time)
     result = subprocess.run(cmd)
@@ -281,7 +277,6 @@ def orchestrate_cycles(
     else:
         print(f"  m/z cutoff: {config.get('mz_cutoff', 'None')}")
     print(f"  RT cutoff: {config.get('rt_cutoff', 'None')}")
-    print(f"  Filter method: {config.get('filter_method', 'simplified-modularity')}")
     print(f"  Max cycles: {config.get('max_cycles', 10)}")
     print(f"{'='*70}\n")
     
@@ -309,7 +304,6 @@ def orchestrate_cycles(
                 'edges_cutoff': config.get('edges_cutoff'),
             },
             'filter_params': {
-                'filter_method': config.get('filter_method', 'simplified-modularity'),
                 'mega_complexity_threshold': config.get('mega_complexity_threshold', 5000),
             }
         },
@@ -574,11 +568,6 @@ def main():
     # RT correction
     parser.add_argument("--rt_correction_json", type=str, default=None,
                        help="JSON file with RT correction models (loess/polynomial/spline methods)")
-    parser.add_argument("--rt_correction_mode", type=str, default='none',
-                       choices=['none', 'pre-kdtree', 'per-distance'],
-                       help="RT correction mode")
-    parser.add_argument("--rt_source", type=str, default='y_center',
-                       help="RT field to use for correction")
     parser.add_argument("--rt_alignment_method", type=str, default='loess',
                        help="RT alignment method: 'loess', 'polynomial', 'spline', 'rbf', 'piecewise', 'aligntree'")
     parser.add_argument("--trafoxmls_dir", type=str, default=None,
@@ -591,15 +580,18 @@ def main():
                        help="Calculate distance before coordinate scaling")
     parser.add_argument("--mz_rt_weight_ratio", type=float, default=1.0,
                        help="Weight ratio for RT relative to m/z")
+    parser.add_argument("--max_match_candidates", type=int, default=1,
+                       help="Nearest neighbours to try per (ref feature, query file), keeping the "
+                            "first that passes the cutoff. 1 = legacy nearest-only.")
     
     # Filtering
-    parser.add_argument("--filter_method", type=str, default='simplified-modularity',
-                       choices=['simplified-modularity', 'modularity'],
-                       help="Method for filtering duplicate vertices")
     parser.add_argument("--mega_complexity_threshold", type=float, default=5000,
                        help="Complexity threshold for heuristic filtering")
     parser.add_argument("--disable_multiprocessing", action='store_true',
                        help="Disable multiprocessing in filtering")
+    parser.add_argument("--num_workers", type=int, default=None,
+                       help="Worker processes for duplicate-vertex filtering. "
+                            "Performance only - results are identical for any worker count")
     
     # Cycle control
     parser.add_argument("--max_cycles", type=int, default=10,
@@ -618,17 +610,16 @@ def main():
         'rt_cutoff': args.rt_cutoff,
         'edges_cutoff': args.edges_cutoff,
         'rt_correction_json': args.rt_correction_json,
-        'rt_correction_mode': args.rt_correction_mode,
-        'rt_source': args.rt_source,
         'rt_alignment_method': args.rt_alignment_method,
         'trafoxmls_dir': args.trafoxmls_dir,
         'normalize_coordinates': args.normalize_coordinates,
         'distance_calc_before_scaling': args.distance_calc_before_scaling,
         'mz_rt_weight_ratio': args.mz_rt_weight_ratio,
+        'max_match_candidates': args.max_match_candidates,
         'filter_duplicate_file_vertices': True,  # Always enabled
-        'filter_method': args.filter_method,
         'mega_complexity_threshold': args.mega_complexity_threshold,
         'disable_multiprocessing': args.disable_multiprocessing,
+        'num_workers': args.num_workers,
         'max_cycles': args.max_cycles,
     }
     

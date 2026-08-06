@@ -11,10 +11,10 @@ params.qal_outdir = "$PWD/results"  // Output-Directory of the quantification re
 // Optional Parameters
 params.qal_charge_low = 1  // Minimum charge of a feature to be considered (biosaur2 -cmin parameter)
 params.qal_charge_high = 8  // Maximum charge of a feature to be considered (biosaur2 -cmax parameter)
-params.qal_ppm_tolerance = 5  // Tolerance for the biosaur2 to use to map identifications on it, as well as to generate features (biosaur2 -htol and -itol parameters). The ppm tolerance should be set to the same value as it has been used for the search engine for identification of MS2 spectra.
-params.qal_minlh = 7  // Minimum number of MS1 scans to be considered for a feature. Check out biosaur2 documnentation to set the correct value. (biosaur2 -minlh parameter)
+params.qal_ppm_tolerance = 5  // Tolerance for the biosaur2 to use to map identifications on it, as well as to generate features (biosaur2 -htol and -itol parameters). The ppm tolerance should be set to the same value as it has been used for the search engine for identification of MS2 spectra. mouse = 5, denopa = 10
+params.qal_minlh = 7  // Minimum number of MS1 scans to be considered for a feature. Check out biosaur2 documnentation to set the correct value. (biosaur2 -minlh parameter), mouse = 7, denopa = 11 
 params.qal_additional_biosaur_parameters  = ""  // Additional parameters for biosaur2. Check out the biosaur2 documentation if you want to set something specific.
-params.qal_additional_feature_linker_params = ""  // Additional parameters for the OpenMS FeatureLinkerUnlabeled step. E.G.: "-algorithm:distance_RT:max_difference 300.0" in case of not a good alignment. Check out the OpenMS documentation. 
+params.qal_additional_feature_linker_params = "-algorithm:distance_RT:max_difference 100 -algorithm:distance_MZ:max_difference 5"  // Additional parameters for the OpenMS FeatureLinkerUnlabeled step. E.G.: "-algorithm:distance_RT:max_difference 300.0" in case of not a good alignment. Check out the OpenMS documentation.  mouse = 5, denopa = 10
 params.qal_mini = 1  // Minimum intensity for biosaur2 to consider a peak for feature finding. (biosaur2 -mini parameter).
 params.qal_rt_enlarge_factor = 0.5  // A factor value to enlarge the RT-window for matching MS2 with features. This factor allow to match MS2 spectra to features, allowing a RT-error to the boundaries of a feature. Formula which enlarges the feature in the RT-dimension: "(MaxRT-MinRT)*enlarge_factor".
 params.qal_protgraph_was_used = false  // A Flag which is needed for the output to know which parsing mode and which column of "fasta_id" and "fasta_desc" needs to be taken. If you searched prior with ProtGraph, set this to true. 
@@ -118,6 +118,11 @@ workflow quantify_and_align {
         generate_feature_ident_intesity_table.out[0]  // A tuple containing: [FDR, raw_quantification_full, raw_quantification_reduced, raw_quantification_minimal]
         consensus_with_feature_tsvs  // Consensus with features: [FDR, [consensusXML, [file1_features.tsv, file2_features.tsv, ...]]]
         match_feature_with_idents.out[0]  // [FDR, [file1.featureXML, file2.featureXML, ...]]  (Features with identifications and MS2 annotated)
+        // Terminal (report/plot) branches — exposed only so downstream workflows can
+        // barrier on full quantify_and_align completion; they carry no data used later.
+        visualize_RT_transoformations.out[0]      // out[3]: RT transformation plots (png)
+        generate_xlsx_reports_from_tables.out[0]  // out[4]: xlsx report tables
+        generate_plots_from_tables.out[0]         // out[5]: missingness plots
 }
 
 
