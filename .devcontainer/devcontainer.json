@@ -13,7 +13,12 @@
 		}
 	},
 
-	// Mount Windows folder containing raw files into the dev container
+	// To mount a host folder of raw files into the container, add a "mounts" entry
+	// pointing at wherever they live on YOUR machine. A hard-coded host path breaks
+	// the container on every machine but the one it was written on, so this entry is
+	// kept OUT of the committed config via:
+	//     git update-index --skip-worktree .devcontainer/devcontainer.json
+	// Undo with --no-skip-worktree before intentionally editing this file for a commit.
 	"mounts": [
 		"type=bind,source=C:\\Users\\jonas\\Documents\\MS1_RAWS,target=/workspaces/unbeQuant/files/raws_mounted"
 	],
